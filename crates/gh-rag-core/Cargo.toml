@@ -1,0 +1,32 @@
+[package]
+name = "gh-rag-core"
+description = "Domain core: store / retrieval / embedder traits (no bin logic)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rusqlite.workspace = true
+
+[features]
+default = []
+# 黄金对齐测试:需要真实 ONNX 模型(首次自动下载)
+golden = ["dep:ort", "dep:tokenizers", "dep:ndarray"]
+
+[dependencies.ort]
+version = "2"
+features = ["download-binaries"]
+optional = true
+
+[dependencies.tokenizers]
+version = "0.21"
+default-features = false
+features = ["onig", "esaxx_fast"]
+optional = true
+
+[dependencies.ndarray]
+version = "0.16"
+optional = true
