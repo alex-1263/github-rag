@@ -33,6 +33,10 @@ agent 获得四个工具:`search_issues` / `get_issue_context` / `find_related` 
 默认 `BAAI/bge-m3`(多语言,1024 维)。模型名 + 库版本钉死在索引 manifest 里——
 更换模型后需 `gh-rag rebuild && gh-rag sync --full`,防止向量空间混用。
 
+## 声明
+
+本项目的 API 使用遵守 [GitHub ToS](https://docs.github.com/en/site-policy/github-terms/github-terms-of-service)(官方 GraphQL API + 认证令牌 + 限流纪律)。本项目与 GitHub/GitHub 官方无隶属关系,未获 GitHub 授权或背书。
+
 ## Phase 0 验证目标
 
 1. 挑 ≥2 个真实仓库 sync
