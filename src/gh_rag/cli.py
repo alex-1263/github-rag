@@ -151,7 +151,8 @@ def search(
     store.ensure_embedding_fp(emb.fingerprint())
     hits = hybrid_search(
         store, emb, query,
-        repos=list(repo) or None, state=state, labels=list(label) or None,
+        repos=list(repo) if repo else None, state=state,
+        labels=list(label) if label else None,
         top_k=top_k, cfg=cfg["retrieval"],
     )
     if not hits:
