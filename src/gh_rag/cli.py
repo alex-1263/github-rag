@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import re
-import sys
 from pathlib import Path
 
 import typer
@@ -28,7 +27,10 @@ def _embedder():
 
     cfg = C.load_config()["embedding"]
     return BgeM3Embedder(
-        model=cfg["model"], hf_mirror=cfg["hf_mirror"], batch_size=cfg["batch_size"]
+        model=cfg["model"],
+        hf_mirror=cfg["hf_mirror"],
+        batch_size=cfg["batch_size"],
+        max_seq_len=cfg.get("max_seq_len", 512),
     )
 
 
@@ -78,7 +80,8 @@ def sync(
     store = _store()
     emb = _embedder()
     rcfg = cfg["retrieval"]
-    emb.ensure = store.ensure_embedding_fp(emb.fingerprint())
+    store.ensure_embedding_fp(emb.fingerprint())
+    batch = rcfg.get("batch_size", 64) or 64
 
     for slug in targets:
         owner, name = slug.split("/", 1)
@@ -119,7 +122,7 @@ def sync(
                 continue
             pending.append(item)
             max_updated = max(max_updated, item["updated_at"])
-            if len(pending) >= rcfg.get("batch_size", 32) * 2:
+            if len(pending) >= batch:
                 flush(pending)
                 typer.echo(
                     f"[{slug}] progress: embedded={n_new} unchanged={n_skip} "
@@ -128,7 +131,7 @@ def sync(
         flush(pending)
         if max_updated:
             store.set_cursor(slug, max_updated)
-        typer.echo(f"[{slug}] embedded={n_new} unchanged={n_skip}")
+        typer.echo(f"[{slug}] done: embedded={n_new} unchanged={n_skip}")
 
     store.close()
 
@@ -145,6 +148,7 @@ def search(
     cfg = C.load_config()
     store = _store()
     emb = _embedder()
+    store.ensure_embedding_fp(emb.fingerprint())
     hits = hybrid_search(
         store, emb, query,
         repos=list(repo) or None, state=state, labels=list(label) or None,
@@ -170,7 +174,7 @@ def issue(ref: str = typer.Argument(..., help="owner/repo#123")):
 
     owner, name, num = _parse_ref(ref)
     pack = _core().get_issue_context(f"{owner}/{name}", num)
-    if not pack:
+    if not pack or "error" in pack:
         typer.secho("not found — synced?", fg=typer.colors.RED)
         raise typer.Exit(1)
     typer.secho(f"## {pack['repo']}#{pack['number']} {pack['title']}", bold=True)
@@ -246,8 +250,12 @@ def doctor():
         store.close()
     else:
         typer.echo("db: not created yet (run gh-rag init)")
-    typer.echo(f"embedding model: {cfg['embedding']['model']} (hf_mirror={cfg['embedding']['hf_mirror']})")
-    typer.exit(0 if ok else 1)
+    typer.echo(
+        f"embedding model: {cfg['embedding']['model']} "
+        f"(hf_mirror={cfg['embedding']['hf_mirror']}, "
+        f"max_seq_len={cfg['embedding'].get('max_seq_len', 512)})"
+    )
+    raise typer.Exit(0 if ok else 1)
 
 
 @app.command()

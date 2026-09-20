@@ -13,9 +13,11 @@ class BgeM3Embedder:
         model: str = "BAAI/bge-m3",
         hf_mirror: bool = False,
         batch_size: int = 32,
+        max_seq_len: int = 512,
     ):
         self.model_name = model
         self.batch_size = batch_size
+        self.max_seq_len = max_seq_len
         self._hf_mirror = hf_mirror
         self._st = None  # lazy: 首次 embed 才加载模型
 
@@ -29,15 +31,18 @@ class BgeM3Embedder:
         from sentence_transformers import SentenceTransformer
 
         self._st = SentenceTransformer(self.model_name)
+        # 关键性能项:bge-m3 默认 max_seq_length=8192,CPU 上按 8K 窗口算注意力
+        # 会让吞吐跌一个数量级。512 是 bge-m3 的标准评测长度,质量几乎无损。
+        self._st.max_seq_length = self.max_seq_len
 
     def fingerprint(self) -> str:
-        """Environment pin: model name + library version (manifest key)."""
+        """Environment pin: model + library version + seq len (manifest key)."""
         try:
             import sentence_transformers as st
             ver = st.__version__
         except Exception:
             ver = "unloaded"
-        return f"{self.model_name}|st={ver}"
+        return f"{self.model_name}|st={ver}|len={self.max_seq_len}"
 
     # -- text assembly -----------------------------------------------------
 

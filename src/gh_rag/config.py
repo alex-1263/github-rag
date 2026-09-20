@@ -44,7 +44,8 @@ DEFAULTS: dict = {
     "embedding": {
         "model": "BAAI/bge-m3",
         "hf_mirror": False,       # 网络受限时置 true,走 hf-mirror.com
-        "batch_size": 32,
+        "batch_size": 64,
+        "max_seq_len": 512,       # bge-m3 默认 8192 会拖垮 CPU 吞吐
     },
 }
 
@@ -61,7 +62,8 @@ token = ""
 [embedding]
 model = "BAAI/bge-m3"
 hf_mirror = false     # 中国网络建议 true
-batch_size = 32
+batch_size = 64
+max_seq_len = 512     # bge-m3 默认 8192 会拖垮 CPU,勿随意调大
 
 [retrieval]
 vec_top = 30
