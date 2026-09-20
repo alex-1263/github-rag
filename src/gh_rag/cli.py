@@ -121,6 +121,10 @@ def sync(
             max_updated = max(max_updated, item["updated_at"])
             if len(pending) >= rcfg.get("batch_size", 32) * 2:
                 flush(pending)
+                typer.echo(
+                    f"[{slug}] progress: embedded={n_new} unchanged={n_skip} "
+                    f"(latest: #{item['number']} {item['title'][:48]})"
+                )
         flush(pending)
         if max_updated:
             store.set_cursor(slug, max_updated)
