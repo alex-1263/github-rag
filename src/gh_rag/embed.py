@@ -29,6 +29,12 @@ class BgeM3Embedder:
         if self._hf_mirror:
             os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
         from sentence_transformers import SentenceTransformer
+        try:
+            import torch
+
+            torch.set_num_threads(max(os.cpu_count() or 8, 8))  # 吃满逻辑核
+        except Exception:
+            pass
 
         self._st = SentenceTransformer(self.model_name)
         # 关键性能项:bge-m3 默认 max_seq_length=8192,CPU 上按 8K 窗口算注意力
