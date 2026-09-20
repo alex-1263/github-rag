@@ -10,6 +10,26 @@ DATA_DIR = Path(os.environ.get("GH_RAG_HOME", str(Path.home() / ".gh-rag")))
 DB_PATH = DATA_DIR / "index.sqlite"
 CONFIG_PATH = DATA_DIR / "config.toml"
 
+
+def _apply_hf_mirror_early() -> None:
+    """Set HF_ENDPOINT at the earliest possible moment.
+
+    config.py is the first gh_rag module imported by every entrypoint
+    (cli / mcp_server / tests). HF libraries bind their endpoint constants
+    at import time, so this must run before any of them are imported.
+    """
+    try:
+        if CONFIG_PATH.exists():
+            with open(CONFIG_PATH, "rb") as f:
+                cfg = tomllib.load(f)
+            if cfg.get("embedding", {}).get("hf_mirror"):
+                os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+    except Exception:
+        pass  # config 不可读时退回默认端点
+
+
+_apply_hf_mirror_early()
+
 DEFAULTS: dict = {
     "retrieval": {
         "vec_top": 30,            # 向量召回深度
