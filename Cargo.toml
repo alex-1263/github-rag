@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+members = ["crates/gh-rag-core", "crates/gh-rag-cli", "crates/gh-rag-mcp"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/alex-1263/github-rag"
+
+[workspace.dependencies]
+gh-rag-core = { path = "crates/gh-rag-core" }
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+anyhow = "1"
+
+[profile.release]
+lto = "thin"
+strip = true

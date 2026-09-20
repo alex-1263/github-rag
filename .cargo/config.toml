@@ -1,0 +1,9 @@
+# 国内镜像(crates.io 直连慢/不稳)
+[source.crates-io]
+replace-with = "rsproxy-sparse"
+
+[source.rsproxy-sparse]
+registry = "sparse+https://rsproxy.cn/index/"
+
+[net]
+git-fetch-with-cli = true

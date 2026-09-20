@@ -1,0 +1,15 @@
+[package]
+name = "gh-rag-cli"
+description = "CLI shell: clap parse -> core(M3 完整实现)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "gh-rag"
+path = "src/main.rs"
+
+[dependencies]
+gh-rag-core.workspace = true
+anyhow.workspace = true
+clap = { version = "4", features = ["derive"] }

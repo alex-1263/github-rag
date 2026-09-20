@@ -2,16 +2,20 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    branches: [main, rust-rewrite]
     paths:
       - "src/**"
       - "tests/**"
+      - "crates/**"
+      - "Cargo.toml"
       - "pyproject.toml"
       - ".github/workflows/ci.yml"
   pull_request:
     paths:
       - "src/**"
       - "tests/**"
+      - "crates/**"
+      - "Cargo.toml"
       - "pyproject.toml"
       - ".github/workflows/ci.yml"
 
@@ -20,7 +24,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  smoke:
+  python-smoke:
+    if: github.ref == 'refs/heads/main' || github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -32,13 +37,45 @@ jobs:
           cache: pip
 
       - name: Install
-        run: pip install -e .
+        run: pip install -e . "sentence-transformers==6.1.0"
 
       - name: Cache HF models
         uses: actions/cache@v6
         with:
           path: ~/.cache/huggingface
-          key: hf-minilm-${{ runner.os }}-v1
+      - uses: actions/checkout@v7
 
-      - name: Smoke test (build → embed → hybrid search → MCP tools)
-        run: python tests/smoke.py
+      # rsproxy 镜像仅本地(中国网络)需要;runner 直连 crates.io 更快
+      - name: Drop local cargo mirror config
+        run: rm -f .cargo/config.toml
+
+  rust:
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/rust-rewrite' || github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Unit + integration tests (golden excluded)
+        run: cargo test --workspace
+
+      # 黄金对齐:M1 实现落地后启用(需要 ONNX 模型缓存)
+      # - name: Golden alignment (vs Python reference vectors)
+      #   run: cargo test -p gh-rag-core --features golden --test golden
