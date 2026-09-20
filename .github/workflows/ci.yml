@@ -43,11 +43,10 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ~/.cache/huggingface
-      - uses: actions/checkout@v7
+          key: hf-minilm-${{ runner.os }}-v1
 
-      # rsproxy 镜像仅本地(中国网络)需要;runner 直连 crates.io 更快
-      - name: Drop local cargo mirror config
-        run: rm -f .cargo/config.toml
+      - name: Smoke test (build → embed → hybrid search → MCP tools)
+        run: python tests/smoke.py
 
   rust:
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/rust-rewrite' || github.event_name == 'pull_request'
@@ -58,6 +57,10 @@ jobs:
         working-directory: .
     steps:
       - uses: actions/checkout@v7
+
+      # rsproxy 镜像仅本地(中国网络)需要;runner 直连 crates.io 更快
+      - name: Drop local cargo mirror config
+        run: rm -f .cargo/config.toml
 
       - uses: dtolnay/rust-toolchain@stable
         with:
