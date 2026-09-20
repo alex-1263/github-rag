@@ -13,20 +13,26 @@ rusqlite.workspace = true
 
 [features]
 default = []
-# 黄金对齐测试:需要真实 ONNX 模型(首次自动下载)
-golden = ["dep:ort", "dep:tokenizers", "dep:ndarray"]
+# 黄金对齐:fastembed(int8)与 ort 直连(fp32)双实现
+golden = ["dep:fastembed", "dep:ort", "dep:tokenizers", "dep:ndarray"]
 
+[dependencies.fastembed]
+version = "7"
+optional = true
+
+# 与 fastembed 7.0.1 内部版本保持一致,避免双份 ONNX Runtime
 [dependencies.ort]
-version = "=2.0.0-rc.10" # 2.x 尚处 rc;按项目纪律精确钉版本
-features = ["download-binaries"]
+version = "=2.0.0-rc.13"
+features = ["ndarray", "std", "download-binaries"]
 optional = true
 
 [dependencies.tokenizers]
 version = "0.21"
 default-features = false
-features = ["onig", "esaxx_fast"]
+features = ["onig"] # 注意:esaxx_fast 为静态 CRT,与 ort 的动态 CRT 在 MSVC 下冲突
 optional = true
 
+# 0.17 与 ort rc.13 的 ndarray 对齐(0.16 会双版本共存导致 trait 不满足)
 [dependencies.ndarray]
-version = "0.16"
+version = "0.17"
 optional = true

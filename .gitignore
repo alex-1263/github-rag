@@ -10,3 +10,5 @@ build/
 .cache/
 .idea/
 .vscode/
+target/
+/tests/fixtures/tmp/
