@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+dist/
+build/
+*.egg-info/
+.cache/
+.idea/
+.vscode/
