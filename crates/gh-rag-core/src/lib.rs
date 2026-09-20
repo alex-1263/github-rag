@@ -6,6 +6,7 @@
 
 #[cfg(feature = "api")]
 pub mod api_embedder;
+pub mod embedder;
 pub mod retrieve;
 pub mod store;
 pub use embedder::{Embedder, EmbeddingFingerprint};
