@@ -78,10 +78,10 @@ pub fn hybrid_search(
         let q = embedder.embed_query(query)?;
         let mut sims: Vec<(i64, f32)> = candidates
             .iter()
-            .filter_map(|(id, blob)| {
+            .map(|(id, blob)| {
                 let v = bytes_to_f32(blob);
                 let dot = v.iter().zip(q.iter()).map(|(a, b)| a * b).sum::<f32>();
-                Some((*id, dot))
+                (*id, dot)
             })
             .collect();
         sims.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
@@ -133,6 +133,8 @@ pub fn hybrid_search(
     let _ = store.log_query("search_issues", query, &log_entries);
     Ok(hits)
 }
+/// (issue_id, repo, number, title, score)
+pub type RelatedHit = (i64, String, i64, String, f32);
 
 /// 与指定 issue 最相似的 N 条(纯向量,排除自身)。
 pub fn find_related(
@@ -141,7 +143,7 @@ pub fn find_related(
     number: i64,
     top_k: usize,
     state: Option<&str>,
-) -> Result<Vec<(i64, String, i64, String, f32)>> {
+) -> Result<Vec<RelatedHit>> {
     let Some(m) = store.get_issue(repo, number)? else {
         return Ok(Vec::new());
     };
@@ -174,8 +176,8 @@ pub fn find_related(
 }
 
 fn bytes_to_f32(b: &[u8]) -> Vec<f32> {
-    b.chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+    (0..b.len() / 4)
+        .map(|i| f32::from_le_bytes([b[i * 4], b[i * 4 + 1], b[i * 4 + 2], b[i * 4 + 3]]))
         .collect()
 }
 

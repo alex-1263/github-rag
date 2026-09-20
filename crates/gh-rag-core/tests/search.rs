@@ -116,53 +116,42 @@ fn setup(issues: &[FixtureIssue]) -> IssueStore {
     store
 }
 
-const ISSUES: &[(&str, i64, &str, &str, &str, &[&str])] = &[
-    (
-        "acme/web",
-        1,
-        "Login redirect loop after OAuth",
-        "users are redirected back to login infinitely after oauth session expires",
-        "open",
-        &["bug", "auth"],
-    ),
-    (
-        "acme/web",
-        2,
-        "PDF export missing Chinese characters",
-        "export renders Chinese as squares, font embedding broken",
-        "closed",
-        &["bug", "export"],
-    ),
-    (
-        "acme/api",
-        3,
-        "Memory leak in connection pool",
-        "workers grow rss, unclosed connections pile up after 429",
-        "closed",
-        &["bug"],
-    ),
-    (
-        "acme/web",
-        4,
-        "Dark mode toggle resets",
-        "theme not persisted on refresh",
-        "open",
-        &["bug", "ux"],
-    ),
-];
-
 fn fixtures() -> Vec<FixtureIssue> {
-    ISSUES
-        .iter()
-        .map(|(r, n, t, b, s, l)| FixtureIssue {
-            repo: r,
-            number: *n,
-            title: t,
-            body: b,
-            state: s,
-            labels: l,
-        })
-        .collect()
+    use FixtureIssue as F;
+    vec![
+        F {
+            repo: "acme/web",
+            number: 1,
+            title: "Login redirect loop after OAuth",
+            body: "users are redirected back to login infinitely after oauth session expires",
+            state: "open",
+            labels: &["bug", "auth"],
+        },
+        F {
+            repo: "acme/web",
+            number: 2,
+            title: "PDF export missing Chinese characters",
+            body: "export renders Chinese as squares, font embedding broken",
+            state: "closed",
+            labels: &["bug", "export"],
+        },
+        F {
+            repo: "acme/api",
+            number: 3,
+            title: "Memory leak in connection pool",
+            body: "workers grow rss, unclosed connections pile up after 429",
+            state: "closed",
+            labels: &["bug"],
+        },
+        F {
+            repo: "acme/web",
+            number: 4,
+            title: "Dark mode toggle resets",
+            body: "theme not persisted on refresh",
+            state: "open",
+            labels: &["bug", "ux"],
+        },
+    ]
 }
 
 #[test]

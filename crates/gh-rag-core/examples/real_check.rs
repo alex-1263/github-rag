@@ -3,7 +3,6 @@
 #![cfg(feature = "golden")]
 
 use gh_rag_core::embedder::onnx::Fp32Embedder;
-use gh_rag_core::embedder::Embedder;
 use gh_rag_core::retrieve::{hybrid_search, SearchFilter, SearchParams};
 use gh_rag_core::store::IssueStore;
 use std::time::Instant;
