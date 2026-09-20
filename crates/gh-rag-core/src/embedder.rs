@@ -44,7 +44,10 @@ pub mod onnx {
 
     impl OnnxEmbedder {
         pub fn new(model_name: impl Into<String>, max_seq_len: usize) -> Self {
-            Self { model_name: model_name.into(), max_seq_len }
+            Self {
+                model_name: model_name.into(),
+                max_seq_len,
+            }
         }
     }
 
@@ -60,7 +63,10 @@ pub mod onnx {
         fn fingerprint(&self) -> EmbeddingFingerprint {
             // 与 Python 侧 fp 格式对齐:"{model}|st={ver}|len={len}" 的 Rust 侧变体,
             // 由黄金测试之外的 manifest 测试单独覆盖。
-            EmbeddingFingerprint(format!("{}|rust-ort|len={}", self.model_name, self.max_seq_len))
+            EmbeddingFingerprint(format!(
+                "{}|rust-ort|len={}",
+                self.model_name, self.max_seq_len
+            ))
         }
     }
 }

@@ -2,11 +2,7 @@
 //! M2 实现;M1 阶段仅占位保持 workspace 编译。
 
 /// RRF 融合(纯函数,M1 即可测试)。
-pub fn rrf_fuse(
-    vec_rank: &[(i64, usize)],
-    fts_rank: &[(i64, usize)],
-    k: usize,
-) -> Vec<(i64, f32)> {
+pub fn rrf_fuse(vec_rank: &[(i64, usize)], fts_rank: &[(i64, usize)], k: usize) -> Vec<(i64, f32)> {
     use std::collections::HashMap;
     let mut scores: HashMap<i64, f32> = HashMap::new();
     for (id, rank) in vec_rank.iter().chain(fts_rank.iter()) {
