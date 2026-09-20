@@ -13,9 +13,8 @@ const GOLDEN_PATH: &str = concat!(
     "/../../tests/fixtures/golden_embeddings.json"
 );
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, serde::Deserialize)]
 struct Golden {
-    max_seq_len: usize,
     cases: Vec<Case>,
 }
 
