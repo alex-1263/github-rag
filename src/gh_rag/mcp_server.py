@@ -23,7 +23,21 @@ class _Core:
         self.emb = BgeM3Embedder(
             model=emb_cfg["model"], hf_mirror=emb_cfg["hf_mirror"],
             batch_size=emb_cfg["batch_size"],
+            max_seq_len=emb_cfg.get("max_seq_len", 512),
         )
+        # Pin the vector space on first use; mismatch -> explicit error.
+        self.store.ensure_embedding_fp(self.emb.fingerprint())
+        # 冷启动消除:server 启动即后台加载模型(4.3GB,~25s),
+        # 首次查询不再撞 MCP 超时。
+        import threading
+
+        def _warm():
+            try:
+                self.emb.embed_query("warmup")
+            except Exception:
+                pass
+
+        threading.Thread(target=_warm, daemon=True).start()
         # Pin the vector space on first use; mismatch -> explicit error.
         self.store.ensure_embedding_fp(self.emb.fingerprint())
 
