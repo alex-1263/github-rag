@@ -1,0 +1,50 @@
+name: build-index
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: "owner/repo to index"
+        required: true
+        default: "t8y2/dbx"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      GH_RAG_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install (pin st==6.1.0 to match local fingerprint)
+        run: pip install -e . "sentence-transformers==6.1.0"
+
+      - name: Cache bge-m3 model
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/huggingface
+          key: hf-bge-m3-${{ runner.os }}-v1
+
+      - name: Sync and embed
+        run: |
+          gh-rag init
+          gh-rag sync "${{ inputs.repo }}"
+          gh-rag status
+
+      - name: Upload index
+        uses: actions/upload-artifact@v4
+        with:
+          name: index-${{ inputs.repo }}
+          path: |
+            ~/.gh-rag/index.sqlite
+          retention-days: 14
+          if-no-files-found: error
