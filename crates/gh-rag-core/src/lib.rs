@@ -4,8 +4,8 @@
 //! - IO 全部 trait 化,本 crate 禁止直接网络请求/环境外的隐式状态
 //! - 依赖方向单向:cli/mcp/web -> core
 
+#[cfg(feature = "api")]
 pub mod api_embedder;
-pub mod embedder;
 pub mod retrieve;
 pub mod store;
 pub use embedder::{Embedder, EmbeddingFingerprint};
