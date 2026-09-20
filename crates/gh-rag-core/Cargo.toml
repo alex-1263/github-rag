@@ -10,11 +10,12 @@ thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 rusqlite.workspace = true
+anyhow = { version = "1", optional = true }
 
 [features]
 default = []
 # 黄金对齐:fastembed(int8)与 ort 直连(fp32)双实现
-golden = ["dep:fastembed", "dep:ort", "dep:tokenizers", "dep:ndarray"]
+golden = ["dep:fastembed", "dep:ort", "dep:tokenizers", "dep:ndarray", "dep:anyhow"]
 
 [dependencies.fastembed]
 version = "7"
@@ -36,3 +37,11 @@ optional = true
 [dependencies.ndarray]
 version = "0.17"
 optional = true
+
+[[example]]
+name = "bench"
+required-features = ["golden"]
+
+[[example]]
+name = "real_check"
+required-features = ["golden"]

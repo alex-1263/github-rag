@@ -920,6 +920,7 @@ dependencies = [
 name = "gh-rag-core"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "fastembed",
  "ndarray",
  "ort",

@@ -9,6 +9,7 @@ pub mod retrieve;
 pub mod store;
 
 pub use embedder::{Embedder, EmbeddingFingerprint};
+pub use retrieve::hybrid_search;
 pub use store::IssueStore;
 
 /// 全局错误类型(core 内禁止 unwrap)。
