@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/gh-rag-core", "crates/gh-rag-cli", "crates/gh-rag-mcp", "crates/gh-rag-mcp-lite"]
+members = ["crates/gh-rag-core", "crates/gh-rag-cli", "crates/gh-rag-mcp"]
 
 [workspace.package]
 version = "0.1.0"

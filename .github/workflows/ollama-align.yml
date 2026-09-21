@@ -1,0 +1,36 @@
+name: ollama-align
+# ollama bge-m3(GGUF)与冻结黄金向量的对齐验证。
+# 手动触发:本机零安装,CI 里 docker 起 ollama,复用 api_golden 测试换端点。
+# 判定:余弦 > 0.999 → ollama 可作为本地 API 推理后端(断网/隐私场景)。
+on:
+  workflow_dispatch: {}
+
+jobs:
+  align:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: 启动 ollama 并拉取 bge-m3
+        run: |
+          docker run -d --name ollama -p 127.0.0.1:11434:11434 ollama/ollama
+          for i in $(seq 1 60); do
+            curl -sf http://127.0.0.1:11434/api/version && echo " ready" && break
+            sleep 2
+          done
+          docker exec ollama ollama pull bge-m3
+
+      - name: 黄金对齐(端点指向 ollama)
+        env:
+          GH_RAG_API_BASE: http://127.0.0.1:11434/v1
+          GH_RAG_API_KEY: ollama # ollama 不校验,占位
+        run: cargo test -p gh-rag-core --features golden --test api_golden -- --nocapture
+
+      - name: 摘要
+        if: always()
+        run: |
+          echo "## ollama bge-m3 对齐结果" >> $GITHUB_STEP_SUMMARY
+          echo "- 阈值 0.999;余弦见上方测试输出" >> $GITHUB_STEP_SUMMARY

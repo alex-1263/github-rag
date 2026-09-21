@@ -1,45 +1,60 @@
 # gh-rag
 
-GitHub issue 的语义记忆层:跨仓库混合检索,CLI + MCP 双形态,供 Claude Code / Copilot 等 agent 消费。设计文档见 [DESIGN.md](DESIGN.md)。
+GitHub issue 的语义记忆层:跨仓库混合检索(向量 + BM25 + RRF),MCP server 形态,供 Claude Code / Copilot / OMP 等 agent 消费。设计文档见 [DESIGN.md](DESIGN.md)。
 
-## 快速开始(验证期,Python)
+**形态:纯 Rust 单二进制 + 纯 API 嵌入**(2026-09 架构收敛:本地 ONNX 推理与 Python 验证版已退役,exe 仅 6.6MB,零模型下载,开箱即用)。
 
-```bash
-python -m venv .venv
-source .venv/Scripts/activate   # Git Bash(Windows)
-pip install -e .
-
-gh-rag init                     # 生成 ~/.gh-rag/config.toml + 空索引
-# 编辑 ~/.gh-rag/config.toml:
-#   repos = ["owner/repo", ...]        # 你要索引的仓库
-#   [embedding] hf_mirror = true       # 中国网络必改
-gh-rag sync --all               # 全量首拉 + 嵌入(bge-m3 首次下载 ~2.2GB)
-gh-rag search "登录后跳转错误"    # 人直接查(和 agent 同一引擎)
-gh-rag doctor                   # 环境自检
-```
-
-Token 依次取自:`GH_RAG_TOKEN` 环境变量 > config.toml > `gh auth token`。
-
-## 接入 Claude Code
+## 快速开始
 
 ```bash
-claude mcp add gh-rag -- "/path/to/github-rag/.venv/Scripts/gh-rag" serve
+cargo build --release -p gh-rag-mcp
+# 前置:一个 OpenAI 兼容嵌入 API 的 key(默认硅基流动免费档 BAAI/bge-m3)
+export GH_RAG_API_KEY=sk-xxx
+
+# 索引文件:~/.gh-rag/index.sqlite(当前由既有 Python 存量构建;Rust sync 建库见 M2)
+./target/release/gh-rag-mcp.exe   # stdio MCP server,挂到任意 MCP 客户端
 ```
 
-agent 获得四个工具:`search_issues` / `get_issue_context` / `find_related` / `list_repos`。
+## 接入 MCP 客户端(OMP/Claude Code 等)
 
-## 嵌入模型
+```json
+{
+  "mcpServers": {
+    "gh-rag": {
+      "type": "stdio",
+      "command": "C:/Users/<you>/.gh-rag/bin/gh-rag-mcp.exe",
+      "env": { "GH_RAG_API_KEY": "sk-xxx" },
+      "timeout": 90000
+    }
+  }
+}
+```
 
-默认 `BAAI/bge-m3`(多语言,1024 维)。模型名 + 库版本钉死在索引 manifest 里——
-更换模型后需 `gh-rag rebuild && gh-rag sync --full`,防止向量空间混用。
+agent 获得四个工具(签名冻结,见 DESIGN §3.8):`search_issues` / `get_issue_context` / `find_related` / `list_repos`。
 
-## 声明
+## 嵌入后端(全部走 HTTP,exe 永远 6.6MB)
 
-本项目的 API 使用遵守 [GitHub ToS](https://docs.github.com/en/site-policy/github-terms/github-terms-of-service)(官方 GraphQL API + 认证令牌 + 限流纪律)。本项目与 GitHub/GitHub 官方无隶属关系,未获 GitHub 授权或背书。
+| 后端 | 配置 | 场景 |
+|---|---|---|
+| 硅基流动(默认) | `GH_RAG_API_KEY` | 日常,免费 bge-m3 |
+| 任意 OpenAI 兼容端点 | 加 `GH_RAG_API_BASE` | vLLM / TEI / 网关 |
+| ollama(本机) | `GH_RAG_API_BASE=http://127.0.0.1:11434/v1` | 断网/隐私;对齐验证见 `.github/workflows/ollama-align.yml`(手动触发) |
 
-## Phase 0 验证目标
+## 诊断
 
-1. 挑 ≥2 个真实仓库 sync
-2. `gh-rag search` 抽查 20 条真实查询的 top-5 命中
-3. 接入 Claude Code,观察 agent 是否主动调用(查 `query_log` 表)
-4. 记录 agent 因召回历史 issue 改变行为的实例
+```bash
+# API 报障一键定位(status/headers/body 全量)
+GH_RAG_API_KEY=xxx cargo run -p gh-rag-core --example api_probe --release
+
+# API 黄金对齐(需网络 + key;守护嵌入与索引同空间,阈值 0.999)
+GH_RAG_API_KEY=xxx cargo test -p gh-rag-core --features golden -- --nocapture
+```
+
+## 开发
+
+```bash
+cargo fmt --all && cargo clippy --all-targets -- -D warnings
+cargo test --workspace
+```
+
+架构纪律与里程碑见 [AGENTS.md](AGENTS.md)。

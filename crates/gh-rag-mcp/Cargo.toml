@@ -1,6 +1,6 @@
 [package]
 name = "gh-rag-mcp"
-description = "MCP server shell: rmcp tools -> core"
+description = "MCP server (API-only): rmcp tools -> core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,7 +10,7 @@ name = "gh-rag-mcp"
 path = "src/main.rs"
 
 [dependencies]
-gh-rag-core = { workspace = true, features = ["fp32", "api"] }
+gh-rag-core = { workspace = true }
 anyhow.workspace = true
 serde_json.workspace = true
 rmcp = { version = "3", features = ["server", "transport-io"] }

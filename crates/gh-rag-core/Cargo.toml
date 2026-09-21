@@ -10,56 +10,19 @@ thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 rusqlite.workspace = true
-anyhow = { version = "1", optional = true }
 
 [features]
 default = []
-# fp32 直连(ort):MCP server 默认路径
-fp32 = ["dep:ort", "dep:tokenizers", "dep:ndarray", "dep:anyhow"]
-# int8(fastembed):M2 建库提速路径
-int8 = ["dep:fastembed", "dep:anyhow"]
-# 黄金对齐测试:两种实现都要
-golden = ["fp32", "int8"]
-# 在线 API(硅基流动 OpenAI 兼容)
-api = ["dep:ureq"]
-
+# API 黄金对齐测试开关(需网络 + GH_RAG_API_KEY;CI 无 key 不跑)
+golden = []
 
 [dependencies.ureq]
 version = "2"
-optional = true
 default-features = false
 features = ["json", "tls"]
-[dependencies.fastembed]
-version = "7"
-optional = true
-
-# 与 fastembed 7.0.1 内部版本保持一致,避免双份 ONNX Runtime
-[dependencies.ort]
-version = "=2.0.0-rc.13"
-features = ["ndarray", "std", "download-binaries"]
-optional = true
-
-[dependencies.tokenizers]
-version = "0.21"
-default-features = false
-features = ["onig"] # 注意:esaxx_fast 为静态 CRT,与 ort 的动态 CRT 在 MSVC 下冲突
-optional = true
-
-# 0.17 与 ort rc.13 的 ndarray 对齐(0.16 会双版本共存导致 trait 不满足)
-[dependencies.ndarray]
-version = "0.17"
-optional = true
 
 [dev-dependencies]
 ureq = { version = "2", default-features = false, features = ["json", "tls"] }
 
 [[example]]
 name = "api_probe"
-
-[[example]]
-name = "bench"
-required-features = ["golden"]
-
-[[example]]
-name = "real_check"
-required-features = ["golden"]
