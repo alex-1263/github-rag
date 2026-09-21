@@ -50,6 +50,12 @@ optional = true
 version = "0.17"
 optional = true
 
+[dev-dependencies]
+ureq = { version = "2", default-features = false, features = ["json", "tls"] }
+
+[[example]]
+name = "api_probe"
+
 [[example]]
 name = "bench"
 required-features = ["golden"]

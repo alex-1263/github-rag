@@ -47,21 +47,21 @@ impl Core {
         {
             "" | "api" => {
                 log("embedder: api (BAAI/bge-m3 via siliconflow) — default, zero model download");
-                Box::new(gh_rag_core::api_embedder::ApiEmbedder::from_env().map_err(|e| {
-                    anyhow::anyhow!(
-                        "{e}\n  默认嵌入走 API,需要 GH_RAG_API_KEY。\n  \
+                Box::new(
+                    gh_rag_core::api_embedder::ApiEmbedder::from_env().map_err(|e| {
+                        anyhow::anyhow!(
+                            "{e}\n  默认嵌入走 API,需要 GH_RAG_API_KEY。\n  \
                          两条路:① 设置 GH_RAG_API_KEY(硅基流动免费档即可) \
                          ② 设 GH_RAG_EMBEDDER=local 走本地推理(需 ~/.gh-rag/models/bge-m3/)"
-                    )
-                })?)
+                        )
+                    })?,
+                )
             }
             "local" => {
                 log("embedder: local fp32 onnx");
                 Box::new(Fp32Embedder::new(512)?)
             }
-            other => anyhow::bail!(
-                "GH_RAG_EMBEDDER={other} 无效:可选 api(默认)/ local"
-            ),
+            other => anyhow::bail!("GH_RAG_EMBEDDER={other} 无效:可选 api(默认)/ local"),
         };
         Ok(Self {
             store: std::sync::Mutex::new(store),

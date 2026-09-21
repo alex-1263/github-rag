@@ -63,12 +63,33 @@ impl ApiEmbedder {
                 model: &self.model,
                 input: chunk,
             };
-            let resp: EmbedResponse = self
+            let resp = self
                 .client
                 .post(format!("{}/embeddings", self.base).as_str())
                 .set("Authorization", &format!("Bearer {}", self.key))
-                .send_json(&body)
-                .map_err(|e| Error::Io(std::io::Error::other(format!("api: {e}"))))?
+                .send_json(&body);
+            let resp = match resp {
+                Ok(r) => r,
+                Err(ureq::Error::Status(code, r)) => {
+                    // 带上平台原始错误(如 30014 Token is invalid),不再只给裸 status code
+                    let body = r.into_string().unwrap_or_default();
+                    let msg: Option<String> = serde_json::from_str::<serde_json::Value>(&body)
+                        .ok()
+                        .and_then(|v| {
+                            v.get("message")
+                                .and_then(|m| m.as_str().map(|s| s.to_string()))
+                        });
+                    return Err(Error::Io(std::io::Error::other(format!(
+                        "api {}: {}",
+                        code,
+                        msg.unwrap_or(body.chars().take(120).collect())
+                    ))));
+                }
+                Err(e) => {
+                    return Err(Error::Io(std::io::Error::other(format!("api: {e}"))));
+                }
+            };
+            let resp: EmbedResponse = resp
                 .into_json()
                 .map_err(|e| Error::Io(std::io::Error::other(format!("api body: {e}"))))?;
             if resp.data.len() != chunk.len() {
