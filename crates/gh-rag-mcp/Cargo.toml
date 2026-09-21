@@ -1,6 +1,6 @@
 [package]
 name = "gh-rag-mcp"
-description = "MCP server shell: rmcp tools -> core(M1 末接入)"
+description = "MCP server shell: rmcp tools -> core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,5 +10,8 @@ name = "gh-rag-mcp"
 path = "src/main.rs"
 
 [dependencies]
-gh-rag-core.workspace = true
+gh-rag-core = { workspace = true, features = ["golden", "api"] }
 anyhow.workspace = true
+serde_json.workspace = true
+rmcp = { version = "3", features = ["server", "transport-io"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std"] }

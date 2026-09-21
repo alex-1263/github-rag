@@ -185,6 +185,18 @@ impl IssueStore {
         Ok(rows)
     }
 
+    pub fn relations_of(&self, repo: &str, number: i64) -> Result<Vec<(String, String, i64)>> {
+        let mut stmt = self.db.prepare(
+            "SELECT kind, target_repo, target_number FROM relations WHERE repo = ? AND number = ?",
+        )?;
+        let rows = stmt
+            .query_map(rusqlite::params![repo, number], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     pub fn manifest_get(&self, key: &str) -> Result<Option<String>> {
         let mut stmt = self
             .db
