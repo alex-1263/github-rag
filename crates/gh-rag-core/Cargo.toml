@@ -14,8 +14,14 @@ anyhow = { version = "1", optional = true }
 
 [features]
 default = []
+# fp32 直连(ort):MCP server 默认路径
+fp32 = ["dep:ort", "dep:tokenizers", "dep:ndarray", "dep:anyhow"]
+# int8(fastembed):M2 建库提速路径
+int8 = ["dep:fastembed", "dep:anyhow"]
+# 黄金对齐测试:两种实现都要
+golden = ["fp32", "int8"]
+# 在线 API(硅基流动 OpenAI 兼容)
 api = ["dep:ureq"]
-golden = ["dep:fastembed", "dep:ort", "dep:tokenizers", "dep:ndarray", "dep:anyhow"]
 
 
 [dependencies.ureq]

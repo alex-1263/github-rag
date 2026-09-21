@@ -10,7 +10,7 @@ name = "gh-rag-mcp"
 path = "src/main.rs"
 
 [dependencies]
-gh-rag-core = { workspace = true, features = ["golden", "api"] }
+gh-rag-core = { workspace = true, features = ["fp32", "api"] }
 anyhow.workspace = true
 serde_json.workspace = true
 rmcp = { version = "3", features = ["server", "transport-io"] }

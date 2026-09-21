@@ -30,7 +30,7 @@ pub trait Embedder {
     fn fingerprint(&self) -> EmbeddingFingerprint;
 }
 
-#[cfg(feature = "golden")]
+#[cfg(any(feature = "fp32", feature = "int8"))]
 pub mod onnx {
     use super::*;
     use std::path::PathBuf;
@@ -51,12 +51,14 @@ pub mod onnx {
     }
 
     /// fastembed 驱动的 bge-m3(int8)。
+    #[cfg(feature = "int8")]
     /// embed 需要 &mut,trait 是 &self → Mutex 串行化(嵌入天然批量,MCP 只读并发低)。
     pub struct OnnxEmbedder {
         inner: Mutex<fastembed::Bgem3Embedding>,
         max_seq_len: usize,
     }
 
+    #[cfg(feature = "int8")]
     impl OnnxEmbedder {
         pub fn new(max_seq_len: usize) -> Result<Self> {
             // 本地模型优先(离线/镜像网络);否则回退 HF 自动下载
@@ -96,6 +98,7 @@ pub mod onnx {
         }
     }
 
+    #[cfg(feature = "int8")]
     fn fastembed_err(e: fastembed::Error) -> crate::Error {
         crate::Error::Io(std::io::Error::other(format!("fastembed: {e}")))
     }
@@ -118,6 +121,7 @@ pub mod onnx {
         buf
     }
 
+    #[cfg(feature = "int8")]
     impl Embedder for OnnxEmbedder {
         fn embed_texts(&self, texts: &[String]) -> Result<Vec<Vec<u8>>> {
             let refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
@@ -146,6 +150,7 @@ pub mod onnx {
     }
 
     /// fp32 直连(Xenova 单输出 model.onnx + external data)。
+    #[cfg(feature = "fp32")]
     /// M1 对齐证明:与 Python sentence-transformers 逐位对齐(黄金阈值 0.999)。
     pub struct Fp32Embedder {
         session: Mutex<ort::session::Session>,
@@ -155,6 +160,7 @@ pub mod onnx {
         need_type_ids: bool,
     }
 
+    #[cfg(feature = "fp32")]
     impl Fp32Embedder {
         pub fn new(max_seq_len: usize) -> Result<Self> {
             let dir = gh_rag_home().join("models").join("bge-m3");
@@ -274,6 +280,7 @@ pub mod onnx {
         crate::Error::Io(std::io::Error::other(format!("ort: {e}")))
     }
 
+    #[cfg(feature = "fp32")]
     impl Embedder for Fp32Embedder {
         fn embed_texts(&self, texts: &[String]) -> Result<Vec<Vec<u8>>> {
             texts
