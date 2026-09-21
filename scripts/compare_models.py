@@ -128,10 +128,19 @@ def main() -> int:
 
     print(f"dim: bge={m_bge.shape[1]}")
     q_bge = embed(client, "BAAI/bge-m3", QUERIES)
-
     if m_qwen is not None:
         print(f"dim: qwen={m_qwen.shape[1]}")
-        q_qwen = embed(client, "Qwen/Qwen3-VL-Embedding-8B", QUERIES)
+        # Qwen3-Embedding 系列是指令式模型:查询侧必须加 instruction 前缀(官方用法),
+        # 文档侧不加。裸调用会造成查询向量漂移、枢纽文档污染。
+        QWEN_INSTR = (
+            "Instruct: Given a user's search query about a database tool's issues, "
+            "retrieve the most relevant issue reports\nQuery: "
+        )
+        q_qwen = embed(
+            client,
+            "Qwen/Qwen3-VL-Embedding-8B",
+            [QWEN_INSTR + q for q in QUERIES],
+        )
         overlaps = []
         print("\n================ 检索质量并排(top-5)================")
         for qi, query in enumerate(QUERIES):
