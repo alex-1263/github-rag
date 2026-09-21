@@ -27,8 +27,8 @@ jobs:
         env:
           GH_RAG_API_BASE: http://127.0.0.1:11434/v1
           GH_RAG_API_KEY: ollama # ollama 不校验,占位
+          GH_RAG_API_MODEL: bge-m3 # ollama 库命名(硅基流动是 BAAI/bge-m3)
         run: cargo test -p gh-rag-core --features golden --test api_golden -- --nocapture
-
       - name: 摘要
         if: always()
         run: |
