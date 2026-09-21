@@ -26,9 +26,22 @@
 | OpenAI text-embedding-3-small | $0.02/M | ~$0.1 |
 | Cohere rerank-3.5 | $2/1K 次搜索 | 重排月 $90 级(贵 100 倍) |
 
+
+## 三、国外免费重排 API 专列(2026-09 核实)
+
+| 平台 | 免费内容 | 速率/限制 | 多语言(中文) | 判定 |
+|---|---|---|---|---|
+| **Jina Reranker**(jina.ai) | ✅ **永久免费层** | **100 RPM / 100K TPM**(官方 FAQ 明示) | ✅ jina-reranker-v2-base-multilingual | ⭐ 国外最佳:速率对本项目(每查询 1 次)几乎无限用 |
+| **Cohere**(trial key) | ✅ Trial API key 免费(含 rerank 全端点) | 低速率(约 20 req/min 级)+仅供评估、条款可能含数据用于训练 | ✅ rerank-multilingual | 可试用,不宜生产 |
+| NVIDIA NIM(NeMo Retriever Reranking) | ⚠️ 免费 credits | **用完即止,非永久**;限开发测试 | ✅ | 适合一次性评测,不适合长期 |
+| Cloudflare | ❌ 无通用 rerank API(仅 AI Search 内置) | — | — | — |
+| Voyage | ❌ rerank 无免费层(免费额度在 embedding 侧) | — | — | — |
+| HuggingFace Inference | ⚠️ 每月少量免费调用 | 不稳定、可能冷启动 | 视模型 | 不适合生产 |
+
+**结论**:国外永久免费且能生产的重排只有 **Jina**(100 RPM 足够个人项目全量使用);Cohere trial 是"评估用";NVIDIA 是"一次性"。**但注意国内访问需代理**——综合下来硅基流动(国内直连 + 免费 + 已实测)仍是首选,Jina 是海外场景/多模态(图片重排)的备选。
 实测结论(2026-09,dbx 1000 条 + 12 查询):**付费 8B 与免费 bge 系无代差,重排分数区分度反而 bge 更好**——该场景免费栈无短板。
 
-## 三、本地方案(免费且无限量)
+## 四、本地方案(免费且无限量)
 
 | 方案 | 模型 | 说明 |
 |---|---|---|
@@ -37,7 +50,7 @@
 | fastembed TextCrossEncoder | bge-reranker-v2-m3 | Rust 内置支持,M1.5 启用插槽时零新依赖 |
 | Ollama | bge-m3 / bge-reranker | `ollama pull bge-m3`,OpenAI 兼容端点 localhost:11434/v1 |
 
-## 四、本项目接入速查
+## 五、本项目接入速查
 
 ApiEmbedder 走 OpenAI 兼容协议,三件套切换:
 
@@ -61,7 +74,7 @@ GH_RAG_API_KEY=xxx GH_RAG_API_BASE=... GH_RAG_API_MODEL=... \
 
 判读:≥0.999 可复用现有库;0.99x 必须全库 rebuild(fp 会拒绝混用并报错)。
 
-## 五、实测记录
+## 六、实测记录
 
 | 日期 | 内容 | 结果 |
 |---|---|---|
