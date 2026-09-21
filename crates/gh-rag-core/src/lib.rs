@@ -5,6 +5,7 @@
 //! - 依赖方向单向:cli/mcp/web -> core
 
 pub mod api_embedder;
+pub mod config;
 pub mod embedder;
 pub mod retrieve;
 pub mod store;
@@ -18,6 +19,8 @@ pub enum Error {
     #[error("sqlite: {0}")]
     Sqlite(#[from] rusqlite::Error),
 
+    #[error("config: {0}")]
+    Config(String),
     #[error("embedding fingerprint mismatch: db has {db}, current {current} — rebuild required")]
     FingerprintMismatch { db: String, current: String },
 

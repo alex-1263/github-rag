@@ -1,0 +1,216 @@
+//! 嵌入 API 配置:`~/.gh-rag/config.toml [embedding]` + 环境变量覆盖 + 内置 provider 预设。
+//!
+//! 优先级(高 → 低):
+//! 1. 环境变量 GH_RAG_API_BASE / GH_RAG_API_MODEL / GH_RAG_API_KEY(脚本与 CI 场景)
+//! 2. config.toml `[embedding]` 段(provider 预设名 + 覆盖项)
+//! 3. 内置 provider 预设默认值
+//!
+//! 预设清单(接入细节见 docs/free-models.md):
+//! - siliconflow:国内直连,免费 bge-m3(默认)
+//! - ollama:本机 127.0.0.1:11434,模型名 bge-m3
+//! - openai / jina:海外,需网络
+//! - custom:自建端点(vLLM / TEI / 网关),必须显式 base_url
+
+use crate::{Error, Result};
+
+/// 内置 provider 预设。
+pub const PRESETS: &[(&str, &str, &str)] = &[
+    // (provider, base_url, model)
+    (
+        "siliconflow",
+        "https://api.siliconflow.cn/v1",
+        "BAAI/bge-m3",
+    ),
+    ("ollama", "http://127.0.0.1:11434/v1", "bge-m3"),
+    (
+        "openai",
+        "https://api.openai.com/v1",
+        "text-embedding-3-small",
+    ),
+    ("jina", "https://api.jina.ai/v1", "jina-embeddings-v3"),
+];
+
+pub const DEFAULT_PROVIDER: &str = "siliconflow";
+
+/// 解析后的嵌入端点三元组。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedEmbedding {
+    pub base: String,
+    pub key: String,
+    pub model: String,
+}
+
+/// config.toml `[embedding]` 段的(部分)形状;未知字段忽略,向后兼容。
+#[derive(Debug, Default, serde::Deserialize)]
+struct EmbeddingSection {
+    provider: Option<String>,
+    api_key: Option<String>,
+    base_url: Option<String>,
+    model: Option<String>,
+}
+
+pub fn gh_rag_home() -> std::path::PathBuf {
+    if let Ok(h) = std::env::var("GH_RAG_HOME") {
+        return h.into();
+    }
+    #[cfg(windows)]
+    let key = "USERPROFILE";
+    #[cfg(not(windows))]
+    let key = "HOME";
+    std::env::var(key)
+        .map(std::path::PathBuf::from)
+        .unwrap_or_default()
+        .join(".gh-rag")
+}
+
+/// 解析当前环境的嵌入配置(环境变量 > config > 预设默认)。
+pub fn resolve() -> Result<ResolvedEmbedding> {
+    resolve_with_home(gh_rag_home())
+}
+
+/// 可注入 home 的解析核心(测试用);环境变量照常读取。
+pub fn resolve_with_home(home: std::path::PathBuf) -> Result<ResolvedEmbedding> {
+    let section = std::fs::read_to_string(home.join("config.toml"))
+        .ok()
+        .and_then(|raw| toml::from_str::<toml::Value>(&raw).ok())
+        .and_then(|v| v.get("embedding").cloned())
+        .and_then(|e| e.try_into::<EmbeddingSection>().ok())
+        .unwrap_or_default();
+
+    let provider = std::env::var("GH_RAG_EMBEDDER")
+        .ok()
+        .filter(|v| v != "api") // 历史值 api 视为默认 provider 流程
+        .or(section.provider.clone())
+        .unwrap_or_else(|| DEFAULT_PROVIDER.to_string());
+
+    let (preset_base, preset_model) = match PRESETS.iter().find(|(p, _, _)| *p == provider) {
+        Some((_, b, m)) => ((*b).to_string(), (*m).to_string()),
+        None if provider == "custom" => (String::new(), String::new()),
+        None if provider == "local" => {
+            return Err(Error::Config(
+                "GH_RAG_EMBEDDER=local 已退役(本地 ONNX 推理 2026-09 移除);本机推理请用 provider = \"ollama\""
+                    .to_string(),
+            ));
+        }
+        None => {
+            return Err(Error::Config(format!(
+                "未知 embedding provider `{provider}`:可选 {} 或 custom",
+                PRESETS
+                    .iter()
+                    .map(|(p, _, _)| *p)
+                    .collect::<Vec<_>>()
+                    .join("/")
+            )));
+        }
+    };
+
+    let base = std::env::var("GH_RAG_API_BASE")
+        .ok()
+        .or(section.base_url.clone())
+        .unwrap_or(preset_base);
+    if base.is_empty() {
+        return Err(Error::Config(
+            "provider=custom 必须显式 base_url(或环境变量 GH_RAG_API_BASE)".to_string(),
+        ));
+    }
+
+    let model = std::env::var("GH_RAG_API_MODEL")
+        .ok()
+        .or(section.model.clone())
+        .unwrap_or(preset_model);
+    if model.is_empty() {
+        return Err(Error::Config(
+            "provider=custom 必须显式 model(或环境变量 GH_RAG_API_MODEL)".to_string(),
+        ));
+    }
+
+    let key = std::env::var("GH_RAG_API_KEY")
+        .ok()
+        .or(section.api_key.clone())
+        .unwrap_or_default();
+
+    Ok(ResolvedEmbedding { base, key, model })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn with_home(tag: &str, config: Option<&str>) -> Result<ResolvedEmbedding> {
+        let dir = std::env::temp_dir().join(format!("gh-rag-test-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        if let Some(c) = config {
+            std::fs::write(dir.join("config.toml"), c).unwrap();
+        }
+        resolve_with_home(dir)
+    }
+
+    #[test]
+    fn presets_cover_expected_providers() {
+        assert!(PRESETS.len() >= 4);
+        assert!(PRESETS.iter().any(|(p, _, _)| *p == "siliconflow"));
+        assert!(PRESETS.iter().any(|(p, _, _)| *p == "ollama"));
+    }
+
+    #[test]
+    fn missing_config_falls_back_to_siliconflow() {
+        // 无 config → 默认 siliconflow(若环境变量覆盖了 base,则仅验证可解析)
+        let r = with_home("empty", None).unwrap();
+        assert!(
+            r.base.contains("siliconflow") || std::env::var("GH_RAG_API_BASE").is_ok(),
+            "base={}",
+            r.base
+        );
+    }
+
+    #[test]
+    fn custom_requires_base_url() {
+        let r = with_home(
+            "custom-nobase",
+            Some("[embedding]\nprovider = \"custom\"\n"),
+        );
+        assert!(r.is_err());
+        assert!(r.unwrap_err().to_string().contains("base_url"));
+    }
+
+    #[test]
+    fn custom_with_base_resolves() {
+        let r = with_home(
+            "custom-ok",
+            Some("[embedding]\nprovider = \"custom\"\nbase_url = \"http://10.0.0.1:8080/v1\"\nmodel = \"m\"\n"),
+        )
+        .unwrap();
+        assert_eq!(r.base, "http://10.0.0.1:8080/v1");
+        assert_eq!(r.model, "m");
+    }
+
+    #[test]
+    fn unknown_provider_rejected() {
+        let r = with_home("bad", Some("[embedding]\nprovider = \"nope\"\n"));
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn provider_preset_applies_base_and_model() {
+        let r = with_home(
+            "mix",
+            Some("[embedding]\nprovider = \"ollama\"\napi_key = \"k\"\n"),
+        )
+        .unwrap();
+        assert_eq!(r.base, "http://127.0.0.1:11434/v1");
+        assert_eq!(r.model, "bge-m3");
+        assert_eq!(r.key, "k");
+    }
+
+    #[test]
+    fn legacy_fields_are_tolerated() {
+        let r = with_home(
+            "legacy",
+            Some("[embedding]\nmodel = \"BAAI/bge-m3\"\nhf_mirror = true\nbatch_size = 64\n"),
+        )
+        .unwrap();
+        assert!(r.base.contains("siliconflow"));
+        assert_eq!(r.model, "BAAI/bge-m3");
+    }
+}

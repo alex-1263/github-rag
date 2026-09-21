@@ -38,16 +38,16 @@ struct EmbedData {
 
 impl ApiEmbedder {
     pub fn from_env() -> Result<Self> {
-        let key = std::env::var("GH_RAG_API_KEY").map_err(|_| {
-            Error::Io(std::io::Error::other(
-                "GH_RAG_API_KEY not set (get one at siliconflow.cn)",
-            ))
-        })?;
+        let cfg = crate::config::resolve()?;
+        if cfg.key.is_empty() {
+            return Err(Error::Io(std::io::Error::other(
+                "GH_RAG_API_KEY not set — set the environment variable, or fill in embedding.api_key in config.toml (get one for free at siliconflow.cn)",
+            )));
+        }
         Ok(Self {
-            base: std::env::var("GH_RAG_API_BASE")
-                .unwrap_or_else(|_| "https://api.siliconflow.cn/v1".into()),
-            key,
-            model: std::env::var("GH_RAG_API_MODEL").unwrap_or_else(|_| "BAAI/bge-m3".into()),
+            base: cfg.base,
+            key: cfg.key,
+            model: cfg.model,
             client: ureq::AgentBuilder::new()
                 .timeout(std::time::Duration::from_secs(60))
                 .build(),
