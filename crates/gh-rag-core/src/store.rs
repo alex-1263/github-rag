@@ -25,6 +25,13 @@ pub struct IssueMeta {
     pub updated_at: String,
 }
 
+/// 单条写入载荷:meta + 向量(小端 f32)+ 内容 hash(增量跳过依据)。
+pub struct UpsertItem {
+    pub meta: IssueMeta,
+    pub embedding: Vec<u8>,
+    pub text_hash: String,
+}
+
 impl IssueStore {
     pub fn new(db_path: &Path) -> Result<Self> {
         if !db_path.exists() {
@@ -90,6 +97,8 @@ impl IssueStore {
     }
 
     /// FTS5(BM25)召回,rank 升序(越小越相关)。
+    /// phrase 按空白拆 token 逐个引号包裹(隐式 AND 语义;
+    /// 防 `()` `"` 等 FTS 查询语法字符导致的 syntax error)。
     pub fn fts_search(
         &self,
         phrase: &str,
@@ -97,11 +106,21 @@ impl IssueStore {
         state: Option<&str>,
         limit: usize,
     ) -> Result<Vec<(i64, f32)>> {
+        let match_expr = phrase
+            .split_whitespace()
+            .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let match_expr = if match_expr.is_empty() {
+            "\"\"".to_string()
+        } else {
+            match_expr
+        };
         let mut sql = String::from(
             "SELECT f.rowid, bm25(issues_fts) FROM issues_fts f \
              JOIN issues i ON i.id = f.rowid WHERE issues_fts MATCH ?",
         );
-        let mut args: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(phrase.to_string())];
+        let mut args: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(match_expr)];
         if let Some(repos) = repos {
             sql.push_str(&format!(
                 " AND i.repo IN ({})",
@@ -198,13 +217,147 @@ impl IssueStore {
     }
 
     pub fn manifest_get(&self, key: &str) -> Result<Option<String>> {
-        let mut stmt = self
+        let v = self
             .db
-            .prepare("SELECT value FROM manifest WHERE key = ?")?;
-        let mut rows = stmt.query_map([key], |r| r.get::<_, String>(0))?;
-        Ok(rows.next().transpose()?)
+            .query_row("SELECT value FROM manifest WHERE key=?1", [key], |r| {
+                r.get(0)
+            })
+            .ok();
+        Ok(v)
     }
 
+    /// (embedded_hash, 是否已有向量);None = 行不存在。增量判定用。
+    pub fn embedded_state(&self, repo: &str, number: i64) -> Result<Option<(String, bool)>> {
+        let v: Option<(String, bool)> = self
+            .db
+            .query_row(
+                "SELECT i.embedded_hash, EXISTS(SELECT 1 FROM issues_vec v WHERE v.issue_id = i.id)
+                 FROM issues i WHERE i.repo=?1 AND i.number=?2",
+                rusqlite::params![repo, number],
+                |r| {
+                    Ok((
+                        r.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                        r.get(1)?,
+                    ))
+                },
+            )
+            .ok();
+        Ok(v)
+    }
+    // -- 写路径(M2:建库/增量) ------------------------------------------
+
+    /// 指纹钉死:同一库只接受同一向量空间(model + len 必须一致;
+    /// impl 不同仅警告——同模型不同实现的可互换性由黄金对齐层守护)。
+    pub fn ensure_embedding_fp(&self, fp: &crate::embedder::EmbeddingFingerprint) -> Result<()> {
+        let existing = self.manifest_get("embedding_fp")?;
+        match existing {
+            None => {
+                self.db.execute(
+                    "INSERT OR REPLACE INTO manifest(key,value) VALUES('embedding_fp',?1)",
+                    [&fp.0],
+                )?;
+                Ok(())
+            }
+            Some(cur) if space_of(&cur) == space_of(&fp.0) => {
+                if cur != fp.0 {
+                    eprintln!(
+                        "[gh-rag] embedding impl 变更({cur} -> {}):同空间,继续",
+                        fp.0
+                    );
+                }
+                Ok(())
+            }
+            Some(cur) => Err(Error::FingerprintMismatch {
+                db: cur,
+                current: fp.0.clone(),
+            }),
+        }
+    }
+
+    /// 批量 upsert:单事务。幂等;id 稳定(已有行保留原 id,向量/FTS 同步替换)。
+    pub fn upsert_batch(&self, items: &[UpsertItem]) -> Result<()> {
+        let tx = self.db.unchecked_transaction()?;
+        {
+            let mut sel =
+                tx.prepare("SELECT id,title,body FROM issues WHERE repo=?1 AND number=?2")?;
+            let mut ins = tx.prepare(
+                "INSERT INTO issues(id,repo,number,title,body,state,labels,comments_count,updated_at,embedded_hash)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
+                 ON CONFLICT(repo,number) DO UPDATE SET
+                   title=excluded.title, body=excluded.body, state=excluded.state,
+                   labels=excluded.labels, comments_count=excluded.comments_count,
+                   updated_at=excluded.updated_at, embedded_hash=excluded.embedded_hash")?;
+            let mut fts_ins =
+                tx.prepare("INSERT INTO issues_fts(rowid,title,body) VALUES(?1,?2,?3)")?;
+            let mut fts_del = tx.prepare(
+                "INSERT INTO issues_fts(issues_fts,rowid,title,body) VALUES('delete',?1,?2,?3)",
+            )?;
+            let mut vec_put =
+                tx.prepare("INSERT OR REPLACE INTO issues_vec(issue_id,embedding) VALUES(?1,?2)")?;
+            for it in items {
+                let labels =
+                    serde_json::to_string(&it.meta.labels).unwrap_or_else(|_| "[]".to_string());
+                // 已有行:保 id;contentless FTS 更新 = delete(旧值) + insert(新值)
+                let existing: Option<(i64, String, String)> = sel
+                    .query_row([&it.meta.repo, &it.meta.number.to_string()], |r| {
+                        Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+                    })
+                    .ok();
+                let row_id = match &existing {
+                    Some((old_id, old_title, old_body)) => {
+                        fts_del.execute(rusqlite::params![old_id, old_title, old_body])?;
+                        *old_id
+                    }
+                    None => 0i64, // 0 = 自增
+                };
+                ins.execute(rusqlite::params![
+                    if row_id == 0 { None } else { Some(row_id) },
+                    it.meta.repo,
+                    it.meta.number,
+                    it.meta.title,
+                    it.meta.body,
+                    it.meta.state,
+                    labels,
+                    it.meta.comments_count,
+                    it.meta.updated_at,
+                    it.text_hash,
+                ])?;
+                let real_id = if row_id == 0 {
+                    tx.last_insert_rowid()
+                } else {
+                    row_id
+                };
+                fts_ins.execute(rusqlite::params![real_id, it.meta.title, it.meta.body])?;
+                vec_put.execute(rusqlite::params![real_id, it.embedding])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// 增量游标:该仓库上次同步看到的最新 updated_at(ISO8601,含 Z)。
+    pub fn sync_cursor(&self, repo: &str) -> Result<Option<String>> {
+        let v: Option<String> = self
+            .db
+            .query_row(
+                "SELECT cursor_updated_at FROM sync_state WHERE repo=?1",
+                [repo],
+                |r| r.get(0),
+            )
+            .ok();
+        Ok(v)
+    }
+
+    /// 推进游标(记录本次同步时间)。
+    pub fn sync_advance(&self, repo: &str, cursor: &str) -> Result<()> {
+        self.db.execute(
+            "INSERT INTO sync_state(repo,cursor_updated_at,last_sync_at)
+             VALUES(?1,?2,datetime('now'))
+             ON CONFLICT(repo) DO UPDATE SET cursor_updated_at=excluded.cursor_updated_at, last_sync_at=excluded.last_sync_at",
+            rusqlite::params![repo, cursor],
+        )?;
+        Ok(())
+    }
     // -- query_log(检索质量飞轮的落地) -----------------------------------
 
     pub fn log_query(&self, tool: &str, query: &str, results: &[(String, i64)]) -> Result<()> {
@@ -249,6 +402,14 @@ fn map_meta(r: &rusqlite::Row<'_>) -> rusqlite::Result<IssueMeta> {
 fn parse_labels(raw: Option<String>) -> Vec<String> {
     raw.and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default()
+}
+
+/// 指纹的"向量空间"部分:`{model}|{impl}|len=` → (model, len)。
+/// impl 段不参与拦截判定(黄金对齐守护同模型实现的互换性)。
+fn space_of(fp: &str) -> (String, String) {
+    let model = fp.split('|').next().unwrap_or("").to_string();
+    let len = fp.rsplit("len=").next().unwrap_or("").to_string();
+    (model, len)
 }
 
 const SCHEMA: &str = r#"

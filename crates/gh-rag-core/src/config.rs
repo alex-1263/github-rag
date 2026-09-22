@@ -68,6 +68,65 @@ pub fn resolve() -> Result<ResolvedEmbedding> {
     resolve_with_home(gh_rag_home())
 }
 
+/// config.toml 顶层 `token`(GitHub);空/缺省回落 `gh auth token`。
+pub fn github_token() -> Result<Option<String>> {
+    #[derive(Default, serde::Deserialize)]
+    struct Top {
+        token: Option<String>,
+    }
+    let t: Top = std::fs::read_to_string(gh_rag_home().join("config.toml"))
+        .ok()
+        .and_then(|raw| toml::from_str(&raw).ok())
+        .unwrap_or_default();
+    Ok(t.token.filter(|s| !s.trim().is_empty()))
+}
+/// config 顶层 `repos` 列表。
+pub fn repos() -> Result<Option<Vec<String>>> {
+    #[derive(Default, serde::Deserialize)]
+    struct Top {
+        repos: Option<Vec<String>>,
+    }
+    let t: Top = std::fs::read_to_string(gh_rag_home().join("config.toml"))
+        .ok()
+        .and_then(|raw| toml::from_str(&raw).ok())
+        .unwrap_or_default();
+    Ok(t.repos.filter(|v| !v.is_empty()))
+}
+
+/// 文本组装参数 [retrieval] title_repeats / body_max_chars(与检索一致,建库必须同参)。
+pub fn text_params() -> Result<(usize, usize)> {
+    #[derive(Default, serde::Deserialize)]
+    struct R {
+        title_repeats: Option<usize>,
+        body_max_chars: Option<usize>,
+    }
+    let r: R = std::fs::read_to_string(gh_rag_home().join("config.toml"))
+        .ok()
+        .and_then(|raw| toml::from_str::<toml::Value>(&raw).ok())
+        .and_then(|v| v.get("retrieval").cloned())
+        .and_then(|s| s.try_into().ok())
+        .unwrap_or_default();
+    Ok((
+        r.title_repeats.unwrap_or(2),
+        r.body_max_chars.unwrap_or(2000),
+    ))
+}
+
+/// 嵌入批间节流 [embedding] batch_interval_ms(默认 4000,免费档保守值)。
+pub fn batch_interval_ms() -> Result<u64> {
+    #[derive(Default, serde::Deserialize)]
+    struct E {
+        batch_interval_ms: Option<u64>,
+    }
+    let e: E = std::fs::read_to_string(gh_rag_home().join("config.toml"))
+        .ok()
+        .and_then(|raw| toml::from_str::<toml::Value>(&raw).ok())
+        .and_then(|v| v.get("embedding").cloned())
+        .and_then(|s| s.try_into().ok())
+        .unwrap_or_default();
+    Ok(e.batch_interval_ms.unwrap_or(4000))
+}
+
 /// 可注入 home 的解析核心(测试用);环境变量照常读取。
 pub fn resolve_with_home(home: std::path::PathBuf) -> Result<ResolvedEmbedding> {
     let section = std::fs::read_to_string(home.join("config.toml"))

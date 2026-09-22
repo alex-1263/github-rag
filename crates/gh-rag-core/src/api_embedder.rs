@@ -63,15 +63,48 @@ impl ApiEmbedder {
                 model: &self.model,
                 input: chunk,
             };
+            let resp = self.send_with_retry(&body)?;
+            if resp.data.len() != chunk.len() {
+                return Err(Error::Io(std::io::Error::other(format!(
+                    "api returned {} embeddings for {} inputs",
+                    resp.data.len(),
+                    chunk.len()
+                ))));
+            }
+            out.extend(resp.data.into_iter().map(|d| l2(d.embedding)));
+        }
+        Ok(out)
+    }
+
+    /// 发送 + 429 指数退避(官方推荐姿势:1s/2s/4s,最多 3 次重试)。
+    fn send_with_retry(&self, body: &EmbedRequest<'_>) -> Result<EmbedResponse> {
+        let mut backoff = 0u32;
+        loop {
             let resp = self
                 .client
                 .post(format!("{}/embeddings", self.base).as_str())
                 .set("Authorization", &format!("Bearer {}", self.key))
-                .send_json(&body);
-            let resp = match resp {
-                Ok(r) => r,
+                .send_json(body);
+            match resp {
+                Ok(r) => {
+                    return r
+                        .into_json()
+                        .map_err(|e| Error::Io(std::io::Error::other(format!("api body: {e}"))))
+                }
+                Err(ureq::Error::Status(429, r)) => {
+                    let _ = r.into_string();
+                    if backoff >= 3 {
+                        return Err(Error::Io(std::io::Error::other(
+                            "api 429: 重试 3 次后仍限流,稍后再跑 sync",
+                        )));
+                    }
+                    let secs = 1u64 << backoff; // 1s, 2s, 4s
+                    eprintln!("[gh-rag] api 429,退避 {secs}s(第 {} 次)", backoff + 1);
+                    std::thread::sleep(std::time::Duration::from_secs(secs));
+                    backoff += 1;
+                }
                 Err(ureq::Error::Status(code, r)) => {
-                    // 带上平台原始错误(如 30014 Token is invalid),不再只给裸 status code
+                    // 带上平台原始错误(如 30014 Token is invalid)
                     let body = r.into_string().unwrap_or_default();
                     let msg: Option<String> = serde_json::from_str::<serde_json::Value>(&body)
                         .ok()
@@ -88,20 +121,8 @@ impl ApiEmbedder {
                 Err(e) => {
                     return Err(Error::Io(std::io::Error::other(format!("api: {e}"))));
                 }
-            };
-            let resp: EmbedResponse = resp
-                .into_json()
-                .map_err(|e| Error::Io(std::io::Error::other(format!("api body: {e}"))))?;
-            if resp.data.len() != chunk.len() {
-                return Err(Error::Io(std::io::Error::other(format!(
-                    "api returned {} embeddings for {} inputs",
-                    resp.data.len(),
-                    chunk.len()
-                ))));
             }
-            out.extend(resp.data.into_iter().map(|d| l2(d.embedding)));
         }
-        Ok(out)
     }
 }
 

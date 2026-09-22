@@ -7,8 +7,10 @@
 pub mod api_embedder;
 pub mod config;
 pub mod embedder;
+pub mod github;
 pub mod retrieve;
 pub mod store;
+pub mod sync;
 pub use embedder::{Embedder, EmbeddingFingerprint};
 pub use retrieve::hybrid_search;
 pub use store::IssueStore;
