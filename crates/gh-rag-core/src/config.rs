@@ -88,6 +88,28 @@ pub fn resolve() -> Result<ResolvedEmbedding> {
     resolve_with_home(gh_rag_home())
 }
 
+/// 显式网络代理 [network] proxy(如 socks5://127.0.0.1:10808);
+/// 优先级:环境变量 HTTPS_PROXY/ALL_PROXY > 此配置 > 直连。
+pub fn network_proxy() -> Result<Option<String>> {
+    if let Some(u) = crate::skeleton::proxy_url_from_env(
+        std::env::var("HTTPS_PROXY").ok().as_deref(),
+        std::env::var("ALL_PROXY").ok().as_deref(),
+    ) {
+        return Ok(Some(u));
+    }
+    #[derive(Default, serde::Deserialize)]
+    struct N {
+        proxy: Option<String>,
+    }
+    let n: N = std::fs::read_to_string(gh_rag_home().join("config.toml"))
+        .ok()
+        .and_then(|raw| toml::from_str::<toml::Value>(&raw).ok())
+        .and_then(|v| v.get("network").cloned())
+        .and_then(|s| s.try_into().ok())
+        .unwrap_or_default();
+    Ok(n.proxy.filter(|s| !s.trim().is_empty()))
+}
+
 /// config.toml 顶层 `token`(GitHub);空/缺省回落 `gh auth token`。
 pub fn github_token() -> Result<Option<String>> {
     #[derive(Default, serde::Deserialize)]

@@ -151,10 +151,7 @@ impl HttpGithubApi {
             .timeout(std::time::Duration::from_secs(60))
             .timeout_connect(std::time::Duration::from_secs(15))
             .timeout_read(std::time::Duration::from_secs(30));
-        if let Some(u) = crate::skeleton::proxy_url_from_env(
-            std::env::var("HTTPS_PROXY").ok().as_deref(),
-            std::env::var("ALL_PROXY").ok().as_deref(),
-        ) {
+        if let Some(u) = crate::config::network_proxy().unwrap_or(None) {
             if let Ok(p) = ureq::Proxy::new(&u) {
                 builder = builder.proxy(p);
             } else {
