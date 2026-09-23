@@ -51,7 +51,14 @@ gh-rag sync --all          # 全量建库(issue + PR + 评论)
 #    search_issues / get_issue_context / find_related / list_repos
 ```
 
-日常维护只需要 `gh-rag sync --all`(增量秒级)。
+日常维护只需要 `gh-rag sync --all`(增量秒级)。别人建好的索引可以直接装载(骨架库=向量+元数据,本地补全文):
+
+```bash
+gh-rag fetch --from <骨架库 URL 或本地路径>   # 指纹校验,不匹配拒绝(防向量空间混用)
+gh-rag sync --all                             # 补全文,向量零重嵌
+```
+
+预构建索引与数据贡献见 [gh-rag-indexes](https://github.com/alex-1263/gh-rag-indexes)(骨架库不含全文,版权边界即流程设计)。
 
 ## 工作方式
 

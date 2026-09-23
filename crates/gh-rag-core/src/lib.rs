@@ -10,6 +10,7 @@ pub mod embedder;
 pub mod github;
 pub mod raw;
 pub mod retrieve;
+pub mod skeleton;
 pub mod store;
 pub mod sync;
 pub use embedder::{Embedder, EmbeddingFingerprint};

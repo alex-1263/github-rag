@@ -503,7 +503,7 @@ fn space_of(fp: &str) -> (String, String) {
     (model, len)
 }
 
-const SCHEMA: &str = r#"
+pub(crate) const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS issues(
   id INTEGER PRIMARY KEY, repo TEXT NOT NULL, number INTEGER NOT NULL,
   kind TEXT NOT NULL DEFAULT 'issue',

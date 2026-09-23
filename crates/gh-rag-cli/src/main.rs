@@ -24,11 +24,28 @@ enum Cmd {
     Status,
     /// 环境自检:打印嵌入配置解析结果并实测一次嵌入
     Doctor,
+    /// 导出骨架库(向量+元数据,无全文;分发形态)
+    Export {
+        /// 导出骨架库(唯一形态,保留此参数以明示意图)
+        #[arg(long)]
+        skeleton: bool,
+        /// 输出文件路径
+        #[arg(short, long)]
+        output: String,
+    },
+    /// 装载骨架库(URL 或本地文件;指纹校验+安全导入),随后 sync 补全文
+    Fetch {
+        /// 骨架库 URL 或本地路径(.gz 自动解压)
+        #[arg(long)]
+        from: String,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
     match Args::parse().cmd.unwrap_or(Cmd::Status) {
         Cmd::Doctor => doctor(),
+        Cmd::Export { skeleton, output } => export(skeleton, output),
+        Cmd::Fetch { from } => fetch(from),
         Cmd::Status => status(),
         Cmd::Sync { repo, all } => sync(repo, all),
     }
@@ -106,6 +123,44 @@ fn doctor() -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     println!("  probe:    ok ({} dims)", v.len());
     println!("all good.");
+    Ok(())
+}
+
+fn export(skeleton: bool, output: String) -> anyhow::Result<()> {
+    if !skeleton {
+        anyhow::bail!("--skeleton 为唯一导出形态(全文导出涉版权红线,故意不提供)");
+    }
+    let store = gh_rag_core::store::IssueStore::new(&default_index_path()?)?;
+    let n = gh_rag_core::skeleton::export_skeleton(&store, std::path::Path::new(&output))
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    println!("骨架已导出 {n} 条 → {output}");
+    println!("分发前建议 gzip:骨架库不含正文/评论全文,可安全分发");
+    Ok(())
+}
+
+fn fetch(from: String) -> anyhow::Result<()> {
+    use gh_rag_core::embedder::Embedder as _;
+    let home = gh_rag_core::config::gh_rag_home();
+    let tmp = home.join("fetch-download.tmp");
+    let path =
+        gh_rag_core::skeleton::download_to(&from, &tmp).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let db_path =
+        gh_rag_core::skeleton::gunzip_if_needed(&path).map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    // 指纹必须与本地嵌入配置一致(防向量空间混用)
+    let fp = gh_rag_core::api_embedder::ApiEmbedder::from_env()?.fingerprint();
+    let store = open_or_create_index()?;
+    let r = gh_rag_core::skeleton::import_skeleton(&db_path, &store, &fp.0)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    println!(
+        "骨架装载完成:issue/pr {} 条,向量 {} 条,指纹 {}",
+        r.issues,
+        r.vectors,
+        r.fingerprint.unwrap_or_default()
+    );
+    let _ = std::fs::remove_file(&tmp);
+    let _ = std::fs::remove_file(&db_path);
+    println!("下一步:gh-rag sync --all 补全文(内容哈希对齐,向量零重嵌)");
     Ok(())
 }
 

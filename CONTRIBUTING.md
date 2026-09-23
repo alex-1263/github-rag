@@ -39,6 +39,10 @@ GH_RAG_API_KEY=xxx cargo test -p gh-rag-core --features golden -- --nocapture
 - **禁止** `index.sqlite` 写入任何虚拟表(vec0 等语言私有格式)——跨语言兼容是设计决定
 - core 内禁止 `unwrap()`(测试除外)、禁止隐式全局状态
 
+## 数据贡献
+
+索引数据(骨架库)的贡献见 [gh-rag-indexes](https://github.com/alex-1263/gh-rag-indexes):PR 加仓库名,或 fork 自助构建。骨架库只含向量与事实元数据,**禁止携带正文/评论文本**(版权红线,CI 自动校验)。
+
 ## 行为准则
 
 正常人类标准:对事不对人,讨论用证据,分歧时数据说话。issue/评论内容版权属于各作者,勿整库再分发。
