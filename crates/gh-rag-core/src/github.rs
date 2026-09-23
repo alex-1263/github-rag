@@ -281,6 +281,27 @@ mod tests {
     }
 
     #[test]
+    fn parse_retry_after_reads_seconds_only() {
+        assert_eq!(parse_retry_after("30"), Some(Duration::from_secs(30)));
+        assert_eq!(parse_retry_after("0"), Some(Duration::ZERO));
+        assert_eq!(parse_retry_after("-5"), None, "负数非法");
+        assert_eq!(parse_retry_after("abc"), None);
+        assert_eq!(parse_retry_after(""), None);
+    }
+
+    #[test]
+    fn ratelimit_wait_only_when_remaining_low() {
+        // now 由调用方传入,不取系统时间
+        assert_eq!(
+            ratelimit_wait(150, 1_800, 1_000),
+            Some(Duration::from_secs(800))
+        );
+        assert_eq!(ratelimit_wait(199, 1_800, 1_000), Some(Duration::from_secs(800)));
+        assert_eq!(ratelimit_wait(200, 1_800, 1_000), None, "余量充足不等待");
+        assert_eq!(ratelimit_wait(10, 500, 1_000), None, "reset 已过不等待");
+    }
+
+    #[test]
     fn link_next_extracts_cursor() {
         let h = r#"<https://api.github.com/repositories/1/issues?after=abc&per_page=100>; rel="next", <https://api.github.com/repositories/1/issues?after=zzz>; rel="last""#;
         assert_eq!(
