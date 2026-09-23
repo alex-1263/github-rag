@@ -6,11 +6,23 @@
 use crate::{Error, Result};
 
 use crate::store::IssueMeta;
+use std::time::Duration;
 
 /// GitHub 拉取口(sync 唯一数据源)。
 pub trait GithubApi {
     /// 拉取仓库全部 issue(state=all);`since`(ISO8601)存在时只拉 updated_at >= since 的。
     fn iter_issues(&self, repo: &str, since: Option<&str>) -> Result<Vec<IssueMeta>>;
+
+    /// 流式分页:每拉到一页即回调(页内限流在实现层),调用方逐页持久化,中途失败不丢已拉数据。
+    /// 默认实现 = iter_issues 一次性回调(假 API 无需感知)。
+    fn issues_pages(
+        &self,
+        repo: &str,
+        since: Option<&str>,
+        f: &mut dyn FnMut(Vec<IssueMeta>) -> Result<()>,
+    ) -> Result<()> {
+        f(self.iter_issues(repo, since)?)
+    }
 
     /// 仓库级评论(cursor 分页);`since` 增量游标。默认空(测试假 API 按需覆盖)。
     fn iter_comments(
@@ -159,33 +171,99 @@ impl HttpGithubApi {
     }
 
     fn get(&self, url: &str) -> Result<(String, Option<String>)> {
-        let resp = self
-            .client
-            .get(url)
-            .set("Authorization", &format!("Bearer {}", self.token))
-            .set("Accept", "application/vnd.github+json")
-            .set("User-Agent", "gh-rag")
-            .call();
-        match resp {
-            Ok(r) => {
-                let next = link_next(r.header("Link"));
-                let body = r
-                    .into_string()
-                    .map_err(|e| Error::Io(std::io::Error::other(format!("github body: {e}"))))?;
-                Ok((body, next))
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            throttle();
+            let resp = self
+                .client
+                .get(url)
+                .set("Authorization", &format!("Bearer {}", self.token))
+                .set("Accept", "application/vnd.github+json")
+                .set("User-Agent", "gh-rag")
+                .call();
+            match resp {
+                Ok(r) => {
+                    let next = link_next(r.header("Link"));
+                    // 剩余额度告急:sleep 至重置时刻(审查③:不尊重 x-ratelimit)
+                    let remaining = r
+                        .header("x-ratelimit-remaining")
+                        .and_then(|s| s.parse().ok());
+                    let reset = r.header("x-ratelimit-reset").and_then(|s| s.parse().ok());
+                    if let (Some(remaining), Some(reset)) = (remaining, reset) {
+                        if let Some(wait) = ratelimit_wait(remaining, reset, now_unix()) {
+                            std::thread::sleep(wait);
+                        }
+                    }
+                    let body = r.into_string().map_err(|e| {
+                        Error::Io(std::io::Error::other(format!("github body: {e}")))
+                    })?;
+                    return Ok((body, next));
+                }
+                Err(ureq::Error::Status(403, r)) | Err(ureq::Error::Status(429, r)) => {
+                    let retry_after = r.header("Retry-After").and_then(parse_retry_after);
+                    let body = r.into_string().unwrap_or_default();
+                    match retry_after {
+                        Some(d) if attempt <= 3 => {
+                            std::thread::sleep(d);
+                            continue;
+                        }
+                        _ => {
+                            return Err(Error::Io(std::io::Error::other(format!(
+                                "github rate-limited: {}",
+                                body.chars().take(160).collect::<String>()
+                            ))))
+                        }
+                    }
+                }
+                Err(ureq::Error::Status(code, _)) => Err(Error::Io(std::io::Error::other(
+                    format!("github http {code}: {url}"),
+                )))?,
+                Err(e) => Err(Error::Io(std::io::Error::other(format!("github: {e}"))))?,
             }
-            Err(ureq::Error::Status(403, r)) | Err(ureq::Error::Status(429, r)) => {
-                let body = r.into_string().unwrap_or_default();
-                Err(Error::Io(std::io::Error::other(format!(
-                    "github rate-limited: {}",
-                    body.chars().take(160).collect::<String>()
-                ))))
-            }
-            Err(ureq::Error::Status(code, _)) => Err(Error::Io(std::io::Error::other(format!(
-                "github http {code}: {url}"
-            )))),
-            Err(e) => Err(Error::Io(std::io::Error::other(format!("github: {e}")))),
         }
+    }
+}
+
+fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// 请求级最小间隔(进程内静态节流,审查③:无翻页间隔)。
+const MIN_REQUEST_INTERVAL: Duration = Duration::from_millis(200);
+
+/// 进程内静态节流:距上次请求不足 200ms 则补睡。
+fn throttle() {
+    static LAST: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(t) = *last {
+        let elapsed = t.elapsed();
+        if elapsed < MIN_REQUEST_INTERVAL {
+            std::thread::sleep(MIN_REQUEST_INTERVAL - elapsed);
+        }
+    }
+    *last = Some(std::time::Instant::now());
+}
+
+/// 解析 Retry-After 头(秒数形式);负数/非数字返回 None。
+pub fn parse_retry_after(s: &str) -> Option<Duration> {
+    let secs: i64 = s.trim().parse().ok()?;
+    if secs < 0 {
+        None
+    } else {
+        Some(Duration::from_secs(secs as u64))
+    }
+}
+
+/// 剩余额度 < 200 时计算需等待时长(reset 时刻由调用方传入 now 判定,不取系统时间)。
+pub fn ratelimit_wait(remaining: u64, reset_unix: u64, now_unix: u64) -> Option<Duration> {
+    if remaining >= 200 || reset_unix <= now_unix {
+        None
+    } else {
+        Some(Duration::from_secs(reset_unix - now_unix))
     }
 }
 
@@ -205,19 +283,32 @@ fn link_next(link: Option<&str>) -> Option<String> {
 
 impl GithubApi for HttpGithubApi {
     fn iter_issues(&self, repo: &str, since: Option<&str>) -> Result<Vec<IssueMeta>> {
+        let mut all = Vec::new();
+        self.issues_pages(repo, since, &mut |page| {
+            all.extend(page);
+            Ok(())
+        })?;
+        Ok(all)
+    }
+
+    fn issues_pages(
+        &self,
+        repo: &str,
+        since: Option<&str>,
+        f: &mut dyn FnMut(Vec<IssueMeta>) -> Result<()>,
+    ) -> Result<()> {
         let mut url = format!("https://api.github.com/repos/{repo}/issues?state=all&per_page=100");
         if let Some(s) = since {
             url.push_str(&format!("&since={s}"));
         }
-        let mut all = Vec::new();
         let mut next = Some(url);
         while let Some(u) = next {
             let (body, n) = self.get(&u)?;
             let batch = parse_page(repo, &body)?;
-            all.extend(batch);
+            f(batch)?;
             next = n;
         }
-        Ok(all)
+        Ok(())
     }
 
     fn iter_comments(
@@ -278,6 +369,30 @@ mod tests {
         assert_eq!(v[0].issue_number, 1028, "归属编号提取");
         assert_eq!(v[0].author, "alice");
         assert_eq!(v[1].author, "");
+    }
+
+    #[test]
+    fn parse_retry_after_reads_seconds_only() {
+        assert_eq!(parse_retry_after("30"), Some(Duration::from_secs(30)));
+        assert_eq!(parse_retry_after("0"), Some(Duration::ZERO));
+        assert_eq!(parse_retry_after("-5"), None, "负数非法");
+        assert_eq!(parse_retry_after("abc"), None);
+        assert_eq!(parse_retry_after(""), None);
+    }
+
+    #[test]
+    fn ratelimit_wait_only_when_remaining_low() {
+        // now 由调用方传入,不取系统时间
+        assert_eq!(
+            ratelimit_wait(150, 1_800, 1_000),
+            Some(Duration::from_secs(800))
+        );
+        assert_eq!(
+            ratelimit_wait(199, 1_800, 1_000),
+            Some(Duration::from_secs(800))
+        );
+        assert_eq!(ratelimit_wait(200, 1_800, 1_000), None, "余量充足不等待");
+        assert_eq!(ratelimit_wait(10, 500, 1_000), None, "reset 已过不等待");
     }
 
     #[test]

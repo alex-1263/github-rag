@@ -364,6 +364,61 @@ fn comments_drive_reembed_and_land_in_db() {
     assert_eq!(cs2.len(), 2, "bot 评论仍落库(检索可见,嵌入不含)");
 }
 
+/// 两页分页假 API:覆盖 issues_pages(每页即回调),第一页回调后断言已落盘(流式持久)。
+struct TwoPageGithub {
+    home: std::path::PathBuf,
+}
+
+impl GithubApi for TwoPageGithub {
+    fn iter_issues(&self, _repo: &str, _since: Option<&str>) -> Result<Vec<IssueMeta>> {
+        unimplemented!("sync_repo 应走 issues_pages 流式路径")
+    }
+    fn issues_pages(
+        &self,
+        _repo: &str,
+        _since: Option<&str>,
+        f: &mut dyn FnMut(Vec<IssueMeta>) -> Result<()>,
+    ) -> Result<()> {
+        f(vec![
+            meta(1, "第一页甲", "2026-09-01T00:00:00Z"),
+            meta(2, "第一页乙", "2026-09-02T00:00:00Z"),
+        ])?;
+        // 第一页回调返回后必须已持久化(中途崩溃不丢)
+        let raws = gh_rag_core::raw::RawStore::open(&self.home, "t/a").unwrap();
+        assert_eq!(raws.load("t/a").unwrap().len(), 2, "第一页应已落 raw 层");
+        f(vec![
+            meta(3, "第二页丙", "2026-09-03T00:00:00Z"),
+            meta(4, "第二页丁", "2026-09-04T00:00:00Z"),
+        ])?;
+        Ok(())
+    }
+}
+
+#[test]
+fn issues_pages_streams_each_page_into_raw_layer() {
+    let (d, store) = tmp_store("pages");
+    let gh = TwoPageGithub { home: d.clone() };
+    let emb = FakeEmbedder {
+        count: std::cell::Cell::new(0),
+    };
+
+    let r = sync_repo(&gh, &store, &emb, "t/a", &params(), &d).unwrap();
+    assert_eq!(r.fetched, 4, "两页各 2 条");
+    assert_eq!(r.embedded, 4);
+
+    // sync 结束后 raw 层全量 4 条
+    let raws = gh_rag_core::raw::RawStore::open(&d, "t/a").unwrap();
+    let all = raws.load("t/a").unwrap();
+    assert_eq!(all.len(), 4);
+    let mut nums: Vec<i64> = all.iter().map(|m| m.number).collect();
+    nums.sort_unstable();
+    assert_eq!(nums, vec![1, 2, 3, 4]);
+
+    // 索引侧也可读
+    assert!(store.get_issue("t/a", 4).unwrap().is_some());
+    assert_eq!(emb.count.get(), 4);
+}
+
 #[test]
 fn raw_layer_survives_rebuild_without_api() {
     // 重建场景:raw 层已有数据,github 断流(空响应)也应能从 raw 全量重建
