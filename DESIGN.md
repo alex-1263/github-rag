@@ -1,5 +1,6 @@
 # github-rag 项目方案(v1.2 定稿)
 
+> **2026-09-23 补充(v1.4.2)· 数据贡献机制(gh-rag-indexes)**:分发仓库 = `gh-rag-indexes`(纯 Release 载体),产物命名 `{repo}-{model}-{dim}-{date}.sqlite.gz` + 库内 fingerprint 三级对账。贡献两条流:**① 加仓库名**——PR 改 `repos.toml` 一行,merge 后维护者 key 跑 CI 构建;**② 自助构建**——贡献者 fork 本仓库,在自己 fork 的 Secrets 里配自己的 `EMBED_API_KEY`,`workflow_dispatch` 跑**同一份构建 workflow**(workflow 即产出规格:骨架格式/命名/校验全部统一),产物上传自己 fork 的 Release,PR 只加 manifest 条目(url+模型+维度+sha256)。骨架包(向量+元数据,无全文)进分发;`gh-rag fetch` 拉取→**指纹校验+安全导入(只读连接拷白名单表列,零执行外来 SQL)**→本地 `sync` 补全文(hash 对齐零重嵌)。CI 对陌生人骨架包校验:指纹合法/维度一致/**不含正文与评论文本**(版权红线自动卡)。红线:`pull_request_target` 一律不用(fork PR 在带 secrets 上下文跑代码 = 秘钥泄露经典漏洞);PR 触发的校验 job 零 secrets。
 > **2026-09-23 补充(v1.4.1)· 索引分发形态修正**:issue/PR 正文与评论为用户版权内容(GitHub ToS),整库分发踩线。M3 分发改为**「向量 + 元数据 + hash」Release asset(衍生数据,~35MB)+ 用户本地 `sync` 补全文**(走 API = 正当阅读,版权不越权;hash 对齐使向量零重嵌)——比原「摘要+溯源」方案更优,版权边界更干净且保留完整检索能力。
 > **2026-09-23 能力扩展(v1.4)**:PR 入库(kind 区分,与 issue 同检索流);评论全链路(仓库级端点采集 → 嵌入聚合 → 落库 → MCP 透出);raw 原始层(gzip)使索引重建零 API;嵌入切换为 qwen3.7-text-embedding-flash(百炼,128K 窗口,1024 维经五档扫描实验确认);嵌入文本剥离图片 URL。M2 建库完成,下一步 M2.5 relations。
 > **2026-09-21 架构收敛(v1.3)**:本地 ONNX 推理与 Python 验证版整体退役。嵌入统一走 HTTP(默认硅基流动 bge-m3;`GH_RAG_API_BASE` 可指任意 OpenAI 兼容端点,含 ollama)。MCP server 单二进制 6.6MB。黄金对齐 fixtures 冻结为永久基准,测试形态改为 API 对齐(`api_golden.rs`),阈值 0.999 不变。M2 建库(Rust+API)成为唯一增量路径。下文涉及本地模型/双分支的段落以本注记为准。
