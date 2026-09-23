@@ -22,10 +22,10 @@ golden = []
 [dependencies.ureq]
 version = "2"
 default-features = false
-features = ["json", "tls"]
+features = ["json", "tls", "socks-proxy"]
 
 [dev-dependencies]
-ureq = { version = "2", default-features = false, features = ["json", "tls"] }
+ureq = { version = "2", default-features = false, features = ["json", "tls", "socks-proxy"] }
 
 [[example]]
 name = "api_probe"
