@@ -18,7 +18,6 @@ pub struct ApiEmbedder {
     dimensions: Option<u32>,
     batch: usize,
     client: ureq::Agent,
-    _max_seq_len: usize,
 }
 
 #[derive(serde::Serialize)]
@@ -57,7 +56,6 @@ impl ApiEmbedder {
             client: ureq::AgentBuilder::new()
                 .timeout(std::time::Duration::from_secs(60))
                 .build(),
-            _max_seq_len: 512,
         })
     }
 

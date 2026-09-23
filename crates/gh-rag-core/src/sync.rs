@@ -83,6 +83,8 @@ fn to_raw(m: &IssueMeta) -> RawIssue {
         state: m.state.clone(),
         labels: m.labels.clone(),
         comments_count: m.comments_count,
+        author: m.author.clone(),
+        created_at: m.created_at.clone(),
         updated_at: m.updated_at.clone(),
     }
 }

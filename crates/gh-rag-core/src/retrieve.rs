@@ -64,6 +64,37 @@ pub fn hybrid_search(
     top_k: usize,
     params: &SearchParams,
 ) -> Result<Vec<SearchHit>> {
+    let q = embedder.embed_query(query)?;
+    let hits = hybrid_search_with_query(store, &q, query, filter, top_k, params)?;
+    let log_entries: Vec<(String, i64)> = hits.iter().map(|h| (h.repo.clone(), h.number)).collect();
+    let _ = store.log_query("search_issues", query, Some(filters_json(filter)), &log_entries);
+    Ok(hits)
+}
+
+/// 过滤条件的 JSON 形状(log_query.filters 列)。
+fn filters_json(f: &SearchFilter) -> serde_json::Value {
+    let map = |v: &Option<Vec<String>>| -> serde_json::Value {
+        match v {
+            Some(list) => serde_json::json!(list),
+            None => serde_json::Value::Null,
+        }
+    };
+    serde_json::json!({
+        "repos": map(&f.repos),
+        "state": f.state,
+        "labels": map(&f.labels),
+    })
+}
+
+/// 已有查询向量(如 MCP 侧嵌入先行)的检索路径:不持库锁完成网络调用后再进库。
+pub fn hybrid_search_with_query(
+    store: &IssueStore,
+    q: &[f32],
+    query: &str,
+    filter: &SearchFilter,
+    top_k: usize,
+    params: &SearchParams,
+) -> Result<Vec<SearchHit>> {
     let repos = filter.repos.as_deref();
     let state = filter.state.as_deref();
     let labels = filter.labels.as_deref();
@@ -72,7 +103,6 @@ pub fn hybrid_search(
     let mut vec_rank: Vec<(i64, usize)> = Vec::new();
     let candidates = store.candidates(repos, state, labels)?;
     if !candidates.is_empty() {
-        let q = embedder.embed_query(query)?;
         let mut sims: Vec<(i64, f32)> = candidates
             .iter()
             .map(|(id, blob)| {
@@ -127,8 +157,6 @@ pub fn hybrid_search(
         });
     }
 
-    let log_entries: Vec<(String, i64)> = hits.iter().map(|h| (h.repo.clone(), h.number)).collect();
-    let _ = store.log_query("search_issues", query, &log_entries);
     Ok(hits)
 }
 /// (issue_id, repo, number, title, score)

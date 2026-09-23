@@ -22,6 +22,10 @@ pub struct RawIssue {
     pub state: String,
     pub labels: Vec<String>,
     pub comments_count: i64,
+    #[serde(default)]
+    pub author: String,
+    #[serde(default)]
+    pub created_at: String,
     pub updated_at: String,
 }
 
@@ -95,12 +99,11 @@ impl RawStore {
                 map.insert(i.number, i.clone());
             }
         }
-        let mut lines: Vec<String> = map
+        let lines: Vec<String> = map
             .into_values()
             .map(|r| serde_json::to_string(&r).unwrap_or_default())
             .collect();
-        lines.sort_by_key(|_| 0); // 保持稳定:排序按 number
-                                  // 重新按 number 排序输出(可 diff、可读)
+        // 重新按 number 排序输出(可 diff、可读)
         let mut sorted: Vec<(i64, String)> = lines
             .into_iter()
             .filter_map(|l| {
@@ -169,6 +172,8 @@ impl RawStore {
                 labels: i.labels,
                 comments_count: i.comments_count,
                 comments: Some(by_issue.remove(&i.number).unwrap_or_default()),
+                author: i.author,
+                created_at: i.created_at,
                 updated_at: i.updated_at,
             })
             .collect())
@@ -215,6 +220,8 @@ mod tests {
             state: "open".into(),
             labels: vec!["bug".into()],
             comments_count: 0,
+            author: "alice".into(),
+            created_at: updated.into(),
             updated_at: updated.into(),
         }
     }

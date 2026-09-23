@@ -46,6 +46,8 @@ pub struct GhIssue {
     pub labels: Vec<GhLabel>,
     #[serde(default)]
     pub comments: i64,
+    pub created_at: Option<String>,
+    pub user: Option<GhUser>,
     pub updated_at: String,
     /// PR 会带 pull_request 对象;issue 没有 → 过滤依据
     pub pull_request: Option<serde::de::IgnoredAny>,
@@ -73,8 +75,8 @@ struct GhComment {
 }
 
 #[derive(serde::Deserialize)]
-struct GhUser {
-    login: String,
+pub struct GhUser {
+    pub login: String,
 }
 
 /// 解析一页 JSON → IssueMeta 列表(PR 过滤在此;评论由 HTTP 层按需补拉)。
@@ -99,6 +101,8 @@ pub fn parse_page(repo: &str, body: &str) -> Result<Vec<IssueMeta>> {
             labels: i.labels.into_iter().map(|l| l.name).collect(),
             comments_count: i.comments,
             comments: None,
+            author: i.user.map(|u| u.login).unwrap_or_default(),
+            created_at: i.created_at.unwrap_or_default(),
             updated_at: i.updated_at,
         })
         .collect())
@@ -338,7 +342,8 @@ mod tests {
 
     const PAGE: &str = r#"[
       {"id":111,"number":7,"title":"连接失败","body":"postgres 报错","state":"open",
-       "labels":[{"name":"bug"}],"comments":1,"updated_at":"2026-09-01T00:00:00Z"},
+       "labels":[{"name":"bug"}],"comments":1,"updated_at":"2026-09-01T00:00:00Z",
+       "user":{"login":"alice"},"created_at":"2026-08-30T00:00:00Z"},
       {"id":222,"number":8,"title":"PR 项","body":"x","state":"open",
        "labels":[],"comments":0,"updated_at":"2026-09-02T00:00:00Z",
        "pull_request":{"url":"https://api.github.com/repos/a/b/pulls/8"}}
@@ -354,6 +359,9 @@ mod tests {
         assert_eq!(v[0].comments, None, "评论由 sync 层从仓库级端点聚合");
         assert_eq!(v[1].kind, "pr", "PR 标记");
         assert_eq!(v[0].labels, vec!["bug"]);
+        assert_eq!(v[0].author, "alice", "author(login) 必须入库");
+        assert_eq!(v[0].created_at, "2026-08-30T00:00:00Z");
+        assert_eq!(v[1].author, "", "缺 user 字段容忍为空");
     }
     #[test]
     fn parse_comments_page_groups_by_issue_url() {
