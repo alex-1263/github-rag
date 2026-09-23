@@ -8,6 +8,7 @@ pub mod api_embedder;
 pub mod cjk;
 pub mod config;
 pub mod embedder;
+pub mod eval;
 pub mod github;
 pub mod raw;
 pub mod relations;
@@ -35,6 +36,9 @@ pub enum Error {
 
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
+
+    #[error("eval: {0}")]
+    Eval(String),
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
