@@ -1,5 +1,6 @@
 name: release
-# 打 tag(v*)触发,多平台构建 gh-rag / gh-rag-mcp 双二进制并上传 Release assets
+# 打 tag(v*)触发:先建 Release,再多平台构建 gh-rag / gh-rag-mcp 双二进制上传。
+# 矩阵并发上传必须有先行创建的 Release,否则 race("release not found" 重试死锁)。
 on:
   push:
     tags: ["v*"]
@@ -8,7 +9,18 @@ permissions:
   contents: write
 
 jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # 幂等:已存在(重跑)不报错
+        run: gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes || true
+
   build:
+    needs: create-release
     strategy:
       fail-fast: false
       matrix:
@@ -26,14 +38,16 @@ jobs:
       - uses: actions/checkout@v7
 
       # rsproxy 镜像仅本地(中国网络)需要;runner 直连 crates.io 更快
+      # shell 显式 bash:Windows 默认 pwsh 的 rm 是 Remove-Item,参数不兼容
       - name: Drop local cargo mirror config
+        shell: bash
         run: rm -f .cargo/config.toml
 
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
-      # 构建两个二进制并上传 zip/tar.gz + sha256 到 tag 对应的 Release
+      # 构建两个二进制并上传 zip/tar.gz + sha256 到已创建的 Release
       - uses: taiki-e/upload-rust-binary-action@v1
         with:
           bin: gh-rag, gh-rag-mcp
