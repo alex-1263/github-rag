@@ -249,7 +249,7 @@ impl HttpGithubApi {
                 // 进程内重试把网络毛刺变成几秒延迟
                 Err(e) if attempt <= 3 => {
                     let secs = 2u64 << (attempt - 1); // 2s, 4s, 8s
-                    eprintln!("[gh-rag] 网络瞬断,{secs}s 后重试(第 {attempt} 次)");
+                    eprintln!("[gh-rag] 网络瞬断,{secs}s 后重试(第 {attempt} 次): {e}");
                     std::thread::sleep(std::time::Duration::from_secs(secs));
                     continue;
                 }
