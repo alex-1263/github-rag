@@ -112,7 +112,7 @@ CREATE TABLE query_log (id, ts, tool, query, filters, results, follow_up);
 
 ### 3.5 检索管线与质量保证
 
-**管线**:`title×2 + body 3000 + 评论配额 3000/单条500` 嵌入 → 向量 ∥ BM25(CJK bigram)各 top-30 → RRF → top-5。**Rerank 插槽保留默认关**(触发条件:top-5 垃圾率 >30%,以 report 数据裁决;免费 bge-reranker 区分度已实测优于付费 8B)。
+**管线**:`title×2 + body 2000 + 评论配额 3000/单条500` 嵌入(默认值,config 可调) → 向量 ∥ BM25(CJK bigram)各 top-30 → RRF → top-5。**Rerank 插槽保留默认关**(触发条件:top-5 垃圾率 >30%,以 report 数据裁决;免费 bge-reranker 区分度已实测优于付费 8B)。
 
 **质量系统**:
 1. ✅ 点击日志(query_log + follow_up 定向标记 + report 报表)

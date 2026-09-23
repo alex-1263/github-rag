@@ -35,7 +35,6 @@ GitHub issue/PR 的语义记忆层:跨仓库混合检索(向量 + BM25 + RRF),CL
 | 单元 | 同文件 `#[cfg(test)]` | 纯逻辑(RRF 融合、文本组装、引用解析、游标推进) | 无 IO |
 | 集成 | `crates/gh-rag-core/tests/*.rs`(一行为一文件) | search(检索质量/过滤/query_log)、sync_build(建库→增量→评论驱动→raw 重建) | 临时目录 + 假 embedder/假 API |
 | **黄金对齐** | `crates/gh-rag-core/tests/api_golden.rs` | ApiEmbedder(或任意端点)vs 冻结 fixtures 余弦 > 0.999 | 在线 API(fixtures 为 bge-m3 空间;qwen 空间的基准待生成) |
-| 快照 | 集成测试内 `insta` | 检索输出格式(排序、字段、截断) | 假 embedder |
 
 测试纪律:假 embedder 返回确定性向量(如内容 hash 派生),保证测试可重复;需要真实模型的只有黄金层。
 
@@ -58,7 +57,7 @@ crates/
 
 - **依赖方向单向**:cli/mcp/web → core。core 不依赖任何 bin。
 - **core 的 IO 全部 trait 化**:`Embedder`(embed_texts/embed_query/fingerprint)、`IssueStore`(upsert/candidates/fts/meta)、`GithubApi`(iter_issues)。core 内禁止直接 `reqwest`/模型加载——具体实现放在 core 的 `infra` 模块,通过构造函数注入。
-- 检索参数(RRF k、召回深度、截断)从 config 读,不写死——两分支必须读同一份 `~/.gh-rag/config.toml`。
+- 检索参数(RRF k、召回深度、截断)从 config 读(MCP 已接 [retrieval]),不写死——两分支必须读同一份 `~/.gh-rag/config.toml`。
 - 新增第三方依赖须在 PR 描述里给一句话理由;`core` 的直接依赖目标 ≤ 10 个。
 - 错误处理:core 用 `thiserror` 类型化错误;bin 层负责转成人话退出码。禁止 `unwrap()` 出现在 core(测试代码除外)。
 

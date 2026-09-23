@@ -1,8 +1,6 @@
 //! Embedder trait:向量生产者的唯一抽象。
-//!
-//! 实现(fastembed 封装,内部即 ort + tokenizers):
-//! - `FastEmbedder`:本地 bge-m3(int8),dense 输出 + L2 归一化。
-//!   与 Python sentence-transformers(fp32)的对齐度由黄金测试度量。
+//! 现行实现:ApiEmbedder(core::api_embedder,HTTP 嵌入,provider 可切);
+//! 黄金对齐(api_golden.rs)守护与冻结 fixtures 的空间一致性。
 
 use crate::Result;
 

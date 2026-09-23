@@ -1,6 +1,6 @@
 # 免费/低成本嵌入与重排模型资源指南
 
-> 2026-09 实测整理。本项目默认栈:**BAAI/bge-m3(嵌入)+ BAAI/bge-reranker-v2-m3(重排)**,两者在硅基流动免费托管,本地 ONNX 双备份。
+> 2026-09 实测整理。本项目现行默认栈:**siliconflow bge-m3(开箱即用)/ 生产推荐 aliyun qwen3.7-flash**,重排插槽默认关;本地 ONNX 形态已于 2026-09 退役(历史记录见文末实测表)。
 > 本文回答:"我可以换哪些免费模型/平台?"
 
 ## 一、云端免费平台对比
@@ -69,7 +69,7 @@ GH_RAG_API_MODEL=BAAI/bge-large-zh-v1.5  ...
 
 ```bash
 GH_RAG_API_KEY=xxx GH_RAG_API_BASE=... GH_RAG_API_MODEL=... \
-  cargo test -p gh-rag-core --features api,golden --test golden_api -- --ignored --nocapture
+  cargo test -p gh-rag-core --features golden --test api_golden -- --ignored --nocapture
 ```
 
 判读:≥0.999 可复用现有库;0.99x 必须全库 rebuild(fp 会拒绝混用并报错)。
