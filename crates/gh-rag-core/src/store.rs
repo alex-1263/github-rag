@@ -4,6 +4,7 @@
 //! M2:补全 upsert 建库路径。
 //! schema 与 Python 侧完全一致(普通表 + BLOB 列 + FTS5,跨语言设计)。
 
+use crate::cjk::cjk_bigram;
 use crate::{Error, Result};
 use rusqlite::Connection;
 use std::path::Path;
@@ -52,7 +53,46 @@ impl IssueStore {
             "ALTER TABLE issues ADD COLUMN kind TEXT NOT NULL DEFAULT 'issue'",
             [],
         );
-        Ok(Self { db })
+        let store = Self { db };
+        store.migrate_fts_cjk()?;
+        Ok(store)
+    }
+
+    /// 幂等迁移:存量 FTS 索引是 unicode61 裸文本(整串 CJK 单 token),
+    /// 与 bigram 索引不兼容 → manifest 无 'fts_cjk' 标记时 delete-all 后
+    /// 从 issues 表(经 cjk_bigram)重建;空库直接写标记。
+    fn migrate_fts_cjk(&self) -> Result<()> {
+        if self.manifest_get("fts_cjk")?.is_some() {
+            return Ok(());
+        }
+        let n: i64 = self
+            .db
+            .query_row("SELECT COUNT(*) FROM issues", [], |r| r.get(0))?;
+        if n > 0 {
+            self.db.execute(
+                "INSERT INTO issues_fts(issues_fts) VALUES('delete-all')",
+                [],
+            )?;
+            let mut stmt = self.db.prepare("SELECT id, title, body FROM issues")?;
+            let rows: Vec<(i64, String, String)> = stmt
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                .collect::<std::result::Result<_, _>>()?;
+            drop(stmt);
+            let tx = self.db.unchecked_transaction()?;
+            {
+                let mut ins =
+                    tx.prepare("INSERT INTO issues_fts(rowid,title,body) VALUES(?1,?2,?3)")?;
+                for (id, title, body) in &rows {
+                    ins.execute(rusqlite::params![id, cjk_bigram(title), cjk_bigram(body)])?;
+                }
+            }
+            tx.commit()?;
+        }
+        self.db.execute(
+            "INSERT OR REPLACE INTO manifest(key,value) VALUES('fts_cjk','1')",
+            [],
+        )?;
+        Ok(())
     }
 
     /// 建最小 fixture 库(测试用;M2 由完整 upsert 取代)。
@@ -116,7 +156,8 @@ impl IssueStore {
         state: Option<&str>,
         limit: usize,
     ) -> Result<Vec<(i64, f32)>> {
-        let match_expr = phrase
+        // CJK 双字组预处理(与索引侧同一变换),再按空白拆 token 逐个引号包裹
+        let match_expr = cjk_bigram(phrase)
             .split_whitespace()
             .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
             .collect::<Vec<_>>()
@@ -341,7 +382,12 @@ impl IssueStore {
                     .ok();
                 let row_id = match &existing {
                     Some((old_id, old_title, old_body)) => {
-                        fts_del.execute(rusqlite::params![old_id, old_title, old_body])?;
+                        // 删除必须与插入同一变换(bigram 后的旧内容)
+                        fts_del.execute(rusqlite::params![
+                            old_id,
+                            cjk_bigram(old_title),
+                            cjk_bigram(old_body)
+                        ])?;
                         *old_id
                     }
                     None => 0i64, // 0 = 自增
@@ -364,7 +410,11 @@ impl IssueStore {
                 } else {
                     row_id
                 };
-                fts_ins.execute(rusqlite::params![real_id, it.meta.title, it.meta.body])?;
+                fts_ins.execute(rusqlite::params![
+                    real_id,
+                    cjk_bigram(&it.meta.title),
+                    cjk_bigram(&it.meta.body)
+                ])?;
                 vec_put.execute(rusqlite::params![real_id, it.embedding])?;
                 // 评论整组替换(Some = 本批已聚合;None = 保持存量不动)
                 if let Some(cs) = &it.meta.comments {

@@ -56,11 +56,6 @@ pub fn rrf_fuse(vec_rank: &[(i64, usize)], fts_rank: &[(i64, usize)], k: usize) 
     out
 }
 
-/// FTS5 短语转义:用户原始输入包成短语,规避查询语法错误。
-pub fn fts_sanitize(query: &str) -> String {
-    format!("\"{}\"", query.replace('"', " "))
-}
-
 pub fn hybrid_search(
     store: &IssueStore,
     embedder: &dyn Embedder,
@@ -96,7 +91,7 @@ pub fn hybrid_search(
     }
 
     // ② BM25 召回
-    let fts_rows = store.fts_search(&fts_sanitize(query), repos, state, params.fts_top)?;
+    let fts_rows = store.fts_search(query, repos, state, params.fts_top)?;
     let fts_rank: Vec<(i64, usize)> = fts_rows
         .iter()
         .enumerate()
@@ -205,10 +200,5 @@ mod tests {
         let out = rrf_fuse(&[(7, 1)], &[], 60);
         assert_eq!(out.len(), 1);
         assert!((out[0].1 - 1.0 / 61.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn fts_sanitize_strips_quotes() {
-        assert_eq!(fts_sanitize("a\"b"), "\"a b\"");
     }
 }
