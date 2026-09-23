@@ -193,6 +193,13 @@ pub fn sync_repo(
         store.upsert_batch(&items)?;
     }
 
+    // M2.5 relations:只对 touched 且有变化(hash 变)的 issue 重解析,全量替换写入。
+    // 提及目标可以本库不存在,照存(检索交叉在查询侧做)。
+    for (m, _) in &pending {
+        let rels = crate::relations::parse_mentions(&m.repo, m.number, &m.title, &m.body);
+        store.relations_replace(&m.repo, m.number, &rels)?;
+    }
+
     // 游标 = 本批 issue 最大 updated_at(评论驱动重嵌已由 touched 集保证,不依赖游标)
     let max_updated = fetched
         .iter()

@@ -296,6 +296,41 @@ impl IssueStore {
         Ok(rows)
     }
 
+    /// 全量替换 (repo, number) 的正向关系(同事务 DELETE+INSERT,空切片 = 清空)。
+    pub fn relations_replace(
+        &self,
+        repo: &str,
+        number: i64,
+        rels: &[crate::relations::Relation],
+    ) -> Result<()> {
+        let tx = self.db.unchecked_transaction()?;
+        tx.execute(
+            "DELETE FROM relations WHERE repo = ? AND number = ?",
+            rusqlite::params![repo, number],
+        )?;
+        for r in rels {
+            tx.execute(
+                "INSERT OR IGNORE INTO relations(repo, number, kind, target_repo, target_number)                  VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![repo, number, r.kind.as_str(), r.target_repo, r.target_number],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// 反向查询:所有指向 (repo, number) 的关系。fixes 的反向即 fixed_by,由调用方转义。
+    pub fn relations_reverse(&self, repo: &str, number: i64) -> Result<Vec<(String, String, i64)>> {
+        let mut stmt = self.db.prepare(
+            "SELECT kind, repo, number FROM relations WHERE target_repo = ? AND target_number = ?              ORDER BY repo, number",
+        )?;
+        let rows = stmt
+            .query_map(rusqlite::params![repo, number], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     pub fn relations_of(&self, repo: &str, number: i64) -> Result<Vec<(String, String, i64)>> {
         let mut stmt = self.db.prepare(
             "SELECT kind, target_repo, target_number FROM relations WHERE repo = ? AND number = ?",
