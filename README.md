@@ -1,6 +1,7 @@
 # gh-rag
 
 [![CI](https://github.com/alex-1263/github-rag/actions/workflows/ci.yml/badge.svg)](https://github.com/alex-1263/github-rag/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/alex-1263/github-rag)](https://github.com/alex-1263/github-rag/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-stable-orange.svg)](https://www.rust-lang.org)
 [![MCP](https://img.shields.io/badge/MCP-server-green.svg)](https://modelcontextprotocol.io)
