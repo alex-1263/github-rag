@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use gh_rag_core::api_embedder::ApiEmbedder;
-use gh_rag_core::retrieve::{find_related, hybrid_search_with_query, SearchFilter, SearchParams};
+use gh_rag_core::retrieve::{find_related, hybrid_search_with_query, SearchFilter};
 use gh_rag_core::store::IssueStore;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, ContentBlock, ListToolsResult, ServerCapabilities,
@@ -146,7 +146,8 @@ impl ServerHandler for GhRag {
                             &query,
                             &filter,
                             top_k,
-                            &SearchParams::default(),
+                            // 检索参数从 config [retrieval] 读(AGENTS 纪律),解析失败回落默认
+                            &gh_rag_core::config::search_params().unwrap_or_default(),
                         )
                         .map_err(|e| e.to_string())
                     })
