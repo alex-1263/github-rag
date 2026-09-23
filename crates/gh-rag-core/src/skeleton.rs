@@ -125,7 +125,11 @@ pub fn import_skeleton(
             .map_err(|_| Error::Config(format!("骨架缺表/列 [{table}],拒绝导入(格式不明)")))?;
     }
 
-    // 2. 指纹校验(不匹配拒绝,防向量空间混用)
+    // 2. 指纹校验,语义与 ensure_embedding_fp 对齐:
+    //    - 空间(model+len)不同 → 拒绝
+    //    - 文件为旧格式(无 tr= 组装段,dev-fp 之前的资产)→ 同空间接受,导入后升级 manifest
+    //      (旧格式未记录参数,按默认组装参数假定——与 ensure_embedding_fp 迁移语义一致)
+    //    - 文件带参数段但与本地不同 → 拒绝(两套组装规则的向量不可混)
     let fp: Option<String> = src
         .query_row(
             "SELECT value FROM manifest WHERE key='embedding_fp'",
@@ -133,22 +137,39 @@ pub fn import_skeleton(
             |r| r.get(0),
         )
         .ok();
-    match &fp {
-        Some(f) if f == expect_fp => {}
-        Some(f) => {
-            return Err(Error::Config(format!(
-                "骨架指纹不匹配:文件为 {f},本地为 {expect_fp} —— 换模型请本地重嵌,勿混装"
-            )))
-        }
+    let file_fp = match &fp {
+        Some(f) => f.clone(),
         None => {
             return Err(Error::Config(
                 "骨架缺 embedding_fp,拒绝导入(格式不明)".to_string(),
             ))
         }
+    };
+    let legacy = !file_fp.contains("tr=");
+    // 旧格式资产未记录组装参数,按默认参数假定:仅当本地期望恰为该空间的默认完整指纹时接受
+    let default_full = crate::sync::full_fingerprint(&file_fp, &crate::sync::SyncParams::default());
+    let ok = crate::store::fingerprint_space(&file_fp)
+        == crate::store::fingerprint_space(expect_fp)
+        && (if legacy {
+            expect_fp == default_full
+        } else {
+            file_fp == expect_fp
+        });
+    if !ok {
+        return Err(Error::Config(format!(
+            "骨架指纹不匹配:文件为 {file_fp},本地为 {expect_fp} —— 换模型请本地重嵌,勿混装"
+        )));
     }
 
-    // 3. 白名单拷贝
-    copy_whitelisted(&src, &dst.db)
+    // 3. 白名单拷贝(旧格式资产导入后升级指纹为新格式,后续 sync ensure 直接过)
+    let report = copy_whitelisted(&src, &dst.db)?;
+    if legacy {
+        dst.db.execute(
+            "INSERT OR REPLACE INTO manifest(key,value) VALUES('embedding_fp',?1)",
+            [expect_fp],
+        )?;
+    }
+    Ok(report)
 }
 
 /// 代理环境变量解析(纯函数,便于单测):HTTPS_PROXY 优先,其次 ALL_PROXY;
@@ -273,13 +294,19 @@ mod tests {
 
     const FP: &str = "test-model|api|len=512";
 
+    fn fp_full() -> String {
+        crate::sync::full_fingerprint(FP, &crate::sync::SyncParams::default())
+    }
+
     fn seeded_store(tag: &str) -> (std::path::PathBuf, IssueStore) {
         let dir = std::env::temp_dir().join(format!("gh-rag-skel-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let store = IssueStore::create_fixture(&dir.join("full.sqlite")).unwrap();
+        // 与真实 sync 一致:manifest 写完整指纹(含组装参数)
+        let fp_full = crate::sync::full_fingerprint(FP, &crate::sync::SyncParams::default());
         store
-            .ensure_embedding_fp(&EmbeddingFingerprint(FP.into()))
+            .ensure_embedding_fp(&EmbeddingFingerprint(fp_full))
             .unwrap();
         let m = crate::store::IssueMeta {
             id: 42,
@@ -336,10 +363,10 @@ mod tests {
         export_skeleton(&full, &skel).unwrap();
 
         let fresh = IssueStore::create_fixture(&d.join("fresh.sqlite")).unwrap();
-        let r = import_skeleton(&skel, &fresh, FP).unwrap();
+        let r = import_skeleton(&skel, &fresh, &fp_full()).unwrap();
         assert_eq!(r.issues, 1);
         assert_eq!(r.vectors, 1);
-        assert_eq!(r.fingerprint.as_deref(), Some(FP));
+        assert_eq!(r.fingerprint.as_deref(), Some(fp_full().as_str()));
         let m = fresh.get_issue("a/b", 7).unwrap().unwrap();
         assert_eq!(m.kind, "pr");
         assert!(m.body.is_empty(), "导入后正文待本地 sync 补齐");
@@ -371,7 +398,7 @@ mod tests {
         drop(evil);
 
         let fresh = IssueStore::create_fixture(&d.join("f3.sqlite")).unwrap();
-        let r = import_skeleton(&skel, &fresh, FP).unwrap();
+        let r = import_skeleton(&skel, &fresh, &fp_full()).unwrap();
         assert_eq!(r.issues, 1, "白名单导入不受恶意结构影响");
         // pwned 表绝不能出现在本地库
         let has: i64 = fresh
@@ -394,6 +421,45 @@ mod tests {
             )
             .unwrap();
         assert_eq!(has_trap, 0);
+    }
+
+    #[test]
+    fn legacy_fp_asset_accepted_and_manifest_upgraded() {
+        let (d, full) = seeded_store("legacy");
+        let skel = d.join("s.sqlite");
+        export_skeleton(&full, &skel).unwrap();
+        // 手工把 manifest 降级为旧格式(dev-fp 之前的资产形态)
+        let c = Connection::open(&skel).unwrap();
+        let full_fp: String = c
+            .query_row(
+                "SELECT value FROM manifest WHERE key='embedding_fp'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let legacy_fp = full_fp.split("|tr=").next().unwrap().to_string();
+        c.execute(
+            "INSERT OR REPLACE INTO manifest(key,value) VALUES('embedding_fp',?1)",
+            [&legacy_fp],
+        )
+        .unwrap();
+        drop(c);
+
+        let fresh = IssueStore::create_fixture(&d.join("f5.sqlite")).unwrap();
+        let r = import_skeleton(&skel, &fresh, &full_fp).unwrap();
+        assert_eq!(r.issues, 1, "旧格式同空间资产必须可装载");
+        let upgraded: String = fresh
+            .db
+            .query_row(
+                "SELECT value FROM manifest WHERE key='embedding_fp'",
+                [],
+                |x| x.get(0),
+            )
+            .unwrap();
+        assert_eq!(upgraded, full_fp, "导入后 manifest 升级为新格式");
+        // 带参数段但不同 → 拒绝
+        let bad = format!("{legacy_fp}|tr=9|body=1|cq=1|cc=1");
+        assert!(import_skeleton(&skel, &fresh, &bad).is_err());
     }
 
     #[test]
