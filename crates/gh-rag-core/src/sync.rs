@@ -44,6 +44,15 @@ impl Default for SyncParams {
     }
 }
 
+/// 完整指纹 = 嵌入指纹 + 文本组装参数(唯一组装点):sync 落库与 fetch 校验必须共用,
+/// 否则两侧比对永假(P0)。参数变更 → 存量向量不兼容,ensure 拦截重建。
+pub fn full_fingerprint(base_fp: &str, p: &SyncParams) -> String {
+    format!(
+        "{}|tr={}|body={}|cq={}|cc={}",
+        base_fp, p.title_repeats, p.body_max_chars, COMMENT_QUOTA, PER_COMMENT_MAX
+    )
+}
+
 /// bot 评论过滤:作者以 `[bot]` 结尾(GitHub App 规范)不进嵌入。
 fn effective_comments(m: &IssueMeta) -> Vec<(&str, &str)> {
     m.comments
@@ -100,10 +109,7 @@ pub fn sync_repo(
 ) -> Result<SyncReport> {
     // 完整指纹:向量空间 + 文本组装参数。参数变更 → 存量向量不兼容,ensure 拦截重建。
     let base = embedder.fingerprint();
-    let fp_full = crate::embedder::EmbeddingFingerprint(format!(
-        "{}|tr={}|body={}|cq={}|cc={}",
-        base.0, p.title_repeats, p.body_max_chars, COMMENT_QUOTA, PER_COMMENT_MAX
-    ));
+    let fp_full = crate::embedder::EmbeddingFingerprint(full_fingerprint(&base.0, p));
     store.ensure_embedding_fp(&fp_full)?;
 
     let cursor = store.sync_cursor(repo)?;
