@@ -223,17 +223,85 @@ fn fingerprint_space_mismatch_blocks() {
     };
     sync(&gh, &store, &emb, &d);
 
-    // 同 model 不同 impl:允许(黄金对齐守护)
+    // 同 model 不同 impl:允许(黄金对齐守护)——完整分段指纹
     store
         .ensure_embedding_fp(&EmbeddingFingerprint(
-            "fake-model|other-impl|len=512".into(),
+            "fake-model|other-impl|len=512|tr=2|body=2000|cq=3000|cc=500".into(),
         ))
         .unwrap();
     // 不同 model:拦截
     let err = store
-        .ensure_embedding_fp(&EmbeddingFingerprint("another-model|impl|len=512".into()))
+        .ensure_embedding_fp(&EmbeddingFingerprint(
+            "another-model|impl|len=512|tr=2|body=2000|cq=3000|cc=500".into(),
+        ))
         .unwrap_err();
     assert!(err.to_string().contains("rebuild"), "got: {err}");
+}
+
+#[test]
+fn same_params_rerun_passes() {
+    let (d, store) = tmp_store("fpok");
+    let gh = FakeGithub {
+        issues: vec![meta(1, "x", "2026-09-01T00:00:00Z")],
+        comments: vec![],
+    };
+    let emb = FakeEmbedder {
+        count: std::cell::Cell::new(0),
+    };
+    sync(&gh, &store, &emb, &d);
+    // 同参数重跑(第二次 sync 内部走 ensure)→ 放行
+    let r = sync_repo(&gh, &store, &emb, "t/a", &params(), &d).unwrap();
+    assert_eq!(r.embedded, 0);
+}
+
+#[test]
+fn assembly_param_change_blocks_with_message() {
+    let (d, store) = tmp_store("fpasm");
+    let gh = FakeGithub {
+        issues: vec![meta(1, "x", "2026-09-01T00:00:00Z")],
+        comments: vec![],
+    };
+    let emb = FakeEmbedder {
+        count: std::cell::Cell::new(0),
+    };
+    sync(&gh, &store, &emb, &d);
+
+    // title_repeats 变更 → sync 被拦,报文含「组装参数」
+    let mut p2 = params();
+    p2.title_repeats = 3;
+    let err = sync_repo(&gh, &store, &emb, "t/a", &p2, &d).unwrap_err();
+    assert!(err.to_string().contains("组装参数"), "got: {err}");
+}
+
+#[test]
+fn old_format_fingerprint_migrates_without_reembed() {
+    let (d, store) = tmp_store("fpmig");
+    // 手工写入旧格式指纹(存量库)
+    store
+        .db
+        .execute(
+            "INSERT OR REPLACE INTO manifest(key,value) VALUES('embedding_fp','fake-model|api|len=512')",
+            [],
+        )
+        .unwrap();
+    let gh = FakeGithub {
+        issues: vec![meta(1, "x", "2026-09-01T00:00:00Z")],
+        comments: vec![],
+    };
+    let emb = FakeEmbedder {
+        count: std::cell::Cell::new(0),
+    };
+    // 旧格式 + 同空间 → 放行迁移
+    sync(&gh, &store, &emb, &d);
+    let fp: String = store
+        .db
+        .query_row(
+            "SELECT value FROM manifest WHERE key='embedding_fp'",
+            [],
+            |x| x.get(0),
+        )
+        .unwrap();
+    assert!(fp.contains("tr="), "指纹应覆写为新格式: {fp}");
 }
 
 #[test]

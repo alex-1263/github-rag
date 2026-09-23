@@ -96,7 +96,13 @@ pub fn sync_repo(
     p: &SyncParams,
     raw_home: &std::path::Path,
 ) -> Result<SyncReport> {
-    store.ensure_embedding_fp(&embedder.fingerprint())?;
+    // 完整指纹:向量空间 + 文本组装参数。参数变更 → 存量向量不兼容,ensure 拦截重建。
+    let base = embedder.fingerprint();
+    let fp_full = crate::embedder::EmbeddingFingerprint(format!(
+        "{}|tr={}|body={}|cq={}|cc={}",
+        base.0, p.title_repeats, p.body_max_chars, COMMENT_QUOTA, PER_COMMENT_MAX
+    ));
+    store.ensure_embedding_fp(&fp_full)?;
 
     let cursor = store.sync_cursor(repo)?;
     let fetched = github.iter_issues(repo, cursor.as_deref())?;

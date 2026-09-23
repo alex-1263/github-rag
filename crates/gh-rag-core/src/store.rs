@@ -282,32 +282,61 @@ impl IssueStore {
     }
     // -- 写路径(M2:建库/增量) ------------------------------------------
 
-    /// 指纹钉死:同一库只接受同一向量空间(model + len 必须一致;
-    /// impl 不同仅警告——同模型不同实现的可互换性由黄金对齐层守护)。
+    /// 指纹钉死,分段比较:
+    /// - 空间段(model|len)不同 → FingerprintMismatch;
+    /// - 空间同、文本组装参数(tr/body/cq/cc)任一不同 → Config(重建索引);
+    /// - 仅 impl 段不同 → 警告放行(黄金对齐守护互换性);
+    /// - 旧格式(无 tr= 段)→ 放行并覆写新指纹(存量库自动迁移,零重嵌)。
     pub fn ensure_embedding_fp(&self, fp: &crate::embedder::EmbeddingFingerprint) -> Result<()> {
         let existing = self.manifest_get("embedding_fp")?;
-        match existing {
+        let cur = match existing {
             None => {
                 self.db.execute(
                     "INSERT OR REPLACE INTO manifest(key,value) VALUES('embedding_fp',?1)",
                     [&fp.0],
                 )?;
-                Ok(())
+                return Ok(());
             }
-            Some(cur) if space_of(&cur) == space_of(&fp.0) => {
-                if cur != fp.0 {
-                    eprintln!(
-                        "[gh-rag] embedding impl 变更({cur} -> {}):同空间,继续",
-                        fp.0
-                    );
-                }
-                Ok(())
-            }
-            Some(cur) => Err(Error::FingerprintMismatch {
+            Some(cur) => cur,
+        };
+        if space_of(&cur) != space_of(&fp.0) {
+            return Err(Error::FingerprintMismatch {
                 db: cur,
                 current: fp.0.clone(),
-            }),
+            });
         }
+        // 旧格式(无组装参数段):hash 规则未变,放行并迁移
+        if seg_of(&cur, "tr=").is_empty() {
+            self.db.execute(
+                "INSERT OR REPLACE INTO manifest(key,value) VALUES('embedding_fp',?1)",
+                [&fp.0],
+            )?;
+            return Ok(());
+        }
+        let old_asm = (
+            seg_of(&cur, "tr="),
+            seg_of(&cur, "body="),
+            seg_of(&cur, "cq="),
+            seg_of(&cur, "cc="),
+        );
+        let new_asm = (
+            seg_of(&fp.0, "tr="),
+            seg_of(&fp.0, "body="),
+            seg_of(&fp.0, "cq="),
+            seg_of(&fp.0, "cc="),
+        );
+        if old_asm != new_asm {
+            return Err(Error::Config(
+                "文本组装参数变更,存量向量不兼容,请重建索引(rm index.sqlite 后 sync)".into(),
+            ));
+        }
+        if cur != fp.0 {
+            eprintln!(
+                "[gh-rag] embedding impl 变更({cur} -> {}):同空间,继续",
+                fp.0
+            );
+        }
+        Ok(())
     }
 
     /// 批量 upsert:单事务。幂等;id 稳定(已有行保留原 id,向量/FTS 同步替换)。
@@ -495,12 +524,19 @@ fn parse_labels(raw: Option<String>) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// 指纹的"向量空间"部分:`{model}|{impl}|len=` → (model, len)。
+/// 指纹的"向量空间"部分:`{model}|{impl}|len={n}|…` → (model, len)。
 /// impl 段不参与拦截判定(黄金对齐守护同模型实现的互换性)。
 fn space_of(fp: &str) -> (String, String) {
     let model = fp.split('|').next().unwrap_or("").to_string();
-    let len = fp.rsplit("len=").next().unwrap_or("").to_string();
-    (model, len)
+    (model, seg_of(fp, "len="))
+}
+
+/// 取 `key` 段的值(段形如 `{key}{value}`,value 到下一个 '|' 为止);无则空串。
+fn seg_of(fp: &str, key: &str) -> String {
+    fp.split('|')
+        .find_map(|s| s.strip_prefix(key))
+        .unwrap_or("")
+        .to_string()
 }
 
 pub(crate) const SCHEMA: &str = r#"
