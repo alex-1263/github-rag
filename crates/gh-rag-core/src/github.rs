@@ -233,6 +233,14 @@ impl HttpGithubApi {
                 Err(ureq::Error::Status(code, _)) => Err(Error::Io(std::io::Error::other(
                     format!("github http {code}: {url}"),
                 )))?,
+                // 传输层错误(墙抖/代理瞬断/RST):退避重试而非整轮报废——raw 层有断点,
+                // 进程内重试把网络毛刺变成几秒延迟
+                Err(e) if attempt <= 3 => {
+                    let secs = 2u64 << (attempt - 1); // 2s, 4s, 8s
+                    eprintln!("[gh-rag] 网络瞬断,{secs}s 后重试(第 {attempt} 次)");
+                    std::thread::sleep(std::time::Duration::from_secs(secs));
+                    continue;
+                }
                 Err(e) => Err(Error::Io(std::io::Error::other(format!("github: {e}"))))?,
             }
         }
