@@ -145,12 +145,19 @@ pub struct HttpGithubApi {
 
 impl HttpGithubApi {
     pub fn from_token(token: String) -> Self {
-        Self {
-            token,
-            client: ureq::AgentBuilder::new()
-                .timeout(std::time::Duration::from_secs(30))
-                .build(),
+        // 中国网络直连 api.github.com 长拉取易被掐:支持 HTTPS_PROXY/ALL_PROXY(与 skeleton 下载同款)
+        let mut builder = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(30));
+        if let Some(u) = crate::skeleton::proxy_url_from_env(
+            std::env::var("HTTPS_PROXY").ok().as_deref(),
+            std::env::var("ALL_PROXY").ok().as_deref(),
+        ) {
+            if let Ok(p) = ureq::Proxy::new(&u) {
+                builder = builder.proxy(p);
+            } else {
+                eprintln!("[gh-rag] 代理配置无法解析({u}),回退直连");
+            }
         }
+        Self { token, client: builder.build() }
     }
 
     /// 按 AGENTS 约定的 token 顺序解析。
