@@ -10,6 +10,7 @@ pub mod config;
 pub mod embedder;
 pub mod github;
 pub mod raw;
+pub mod relations;
 pub mod retrieve;
 pub mod skeleton;
 pub mod store;

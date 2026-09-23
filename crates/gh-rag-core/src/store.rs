@@ -863,6 +863,60 @@ mod tests {
     }
 
     #[test]
+    fn relations_replace_and_reverse() {
+        let s = tmp_store("relrev");
+        use crate::relations::{parse_mentions, Relation, RelationKind};
+        // 正向写入 + 重写覆盖(DELETE+INSERT 幂等)
+        let rel = |k, tr: &str, n| Relation {
+            kind: k,
+            target_repo: tr.into(),
+            target_number: n,
+        };
+        s.relations_replace(
+            "t/r",
+            7,
+            &[
+                rel(RelationKind::Fixes, "t/r", 3),
+                rel(RelationKind::Refs, "o/x", 9),
+            ],
+        )
+        .unwrap();
+        let fwd = s.relations_of("t/r", 7).unwrap();
+        assert_eq!(
+            fwd,
+            vec![
+                ("fixes".into(), "t/r".into(), 3),
+                ("refs".into(), "o/x".into(), 9)
+            ]
+        );
+        // 反向:#3 被 #7 fixes
+        let rev = s.relations_reverse("t/r", 3).unwrap();
+        assert_eq!(rev, vec![("fixes".into(), "t/r".into(), 7)]);
+        // 跨仓反向:o/x#9 被 t/r#7 refs
+        let rev2 = s.relations_reverse("o/x", 9).unwrap();
+        assert_eq!(rev2, vec![("refs".into(), "t/r".into(), 7)]);
+        // 无记录 → 空数组
+        assert!(s.relations_reverse("t/r", 99).unwrap().is_empty());
+        // 重写同一 issue:旧记录全量替换,不残留
+        s.relations_replace("t/r", 7, &[rel(RelationKind::Closes, "t/r", 4)])
+            .unwrap();
+        assert_eq!(
+            s.relations_of("t/r", 7).unwrap(),
+            vec![("closes".into(), "t/r".into(), 4)]
+        );
+        // 空切片 = 清空
+        s.relations_replace("t/r", 7, &[]).unwrap();
+        assert!(s.relations_of("t/r", 7).unwrap().is_empty());
+        // parse_mentions 的产物可直接入库(联动冒烟)
+        let m = parse_mentions("t/r", 8, "t", "fixes #5");
+        s.relations_replace("t/r", 8, &m).unwrap();
+        assert_eq!(
+            s.relations_reverse("t/r", 5).unwrap(),
+            vec![("fixes".into(), "t/r".into(), 8)]
+        );
+    }
+
+    #[test]
     fn query_report_counts_window_and_dedup() {
         let s = tmp_store("report");
         // 窗口内(相对 now,离 1 天边界留余量):5 次查询,3 个去重,2 次同 query,1 次 follow_up

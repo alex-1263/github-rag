@@ -450,3 +450,76 @@ fn raw_layer_survives_rebuild_without_api() {
     assert_eq!(all.len(), 1);
     assert_eq!(all[0].comments.as_ref().unwrap().len(), 1);
 }
+
+// -- M2.5 relations ------------------------------------------------------
+
+#[test]
+fn sync_writes_relations_and_reverse_lookup_works() {
+    let (d, store) = tmp_store("relations");
+    let mut m3 = meta(3, "登录崩溃", "2026-09-01T00:00:00Z");
+    m3.body = "点击登录崩溃".into();
+    let mut m7 = meta(7, "修复登录", "2026-09-02T00:00:00Z");
+    m7.body = "修复 #3".into();
+    let mut m8 = meta(8, "关联外部", "2026-09-02T01:00:00Z");
+    m8.body = "refs other/repo#5".into();
+    let gh = FakeGithub {
+        issues: vec![m3, m7, m8],
+        comments: vec![],
+    };
+    let emb = FakeEmbedder {
+        count: std::cell::Cell::new(0),
+    };
+    sync(&gh, &store, &emb, &d);
+
+    // 正向:#7 fixes #3;#8 refs other/repo#5
+    let fwd7 = store.relations_of("t/a", 7).unwrap();
+    assert_eq!(fwd7, vec![("fixes".into(), "t/a".into(), 3)]);
+    let fwd8 = store.relations_of("t/a", 8).unwrap();
+    assert_eq!(fwd8, vec![("refs".into(), "other/repo".into(), 5)]);
+    // 反向:#3 被 #7 fixed_by(跨库编号 other/repo#5 照存,不因本库不存在丢弃)
+    let rev3 = store.relations_reverse("t/a", 3).unwrap();
+    assert_eq!(rev3, vec![("fixes".into(), "t/a".into(), 7)]);
+    let rev5 = store.relations_reverse("other/repo", 5).unwrap();
+    assert_eq!(rev5, vec![("refs".into(), "t/a".into(), 8)]);
+    // 无提及的 issue 不产生行
+    assert!(store.relations_of("t/a", 3).unwrap().is_empty());
+}
+
+#[test]
+fn sync_reparse_only_on_change_stale_relations_cleared() {
+    let (d, store) = tmp_store("relations-incr");
+    let mut m3 = meta(3, "崩溃", "2026-09-01T00:00:00Z");
+    m3.body = "崩溃".into();
+    let mut m7 = meta(7, "修复", "2026-09-02T00:00:00Z");
+    m7.body = "修复 #3".into();
+    let gh = FakeGithub {
+        issues: vec![m3, m7.clone()],
+        comments: vec![],
+    };
+    let emb = FakeEmbedder {
+        count: std::cell::Cell::new(0),
+    };
+    sync(&gh, &store, &emb, &d);
+    assert_eq!(store.relations_of("t/a", 7).unwrap().len(), 1);
+
+    // 正文改指向 #4(但 updated_at 不变):内容 hash 变 → 重解析,旧关系被替换
+    let mut m7b = m7.clone();
+    m7b.body = "修复 #4".into();
+    let gh2 = FakeGithub {
+        issues: vec![m7b],
+        comments: vec![],
+    };
+    let before = emb.count.get();
+    sync(&gh2, &store, &emb, &d);
+    assert!(emb.count.get() > before, "正文变化应重嵌");
+    assert_eq!(
+        store.relations_of("t/a", 7).unwrap(),
+        vec![("fixes".into(), "t/a".into(), 4)]
+    );
+
+    // 幂等重跑:无变化 → 关系保持且不重嵌
+    let before = emb.count.get();
+    sync(&gh2, &store, &emb, &d);
+    assert_eq!(emb.count.get(), before);
+    assert_eq!(store.relations_of("t/a", 7).unwrap().len(), 1);
+}
