@@ -157,7 +157,10 @@ impl HttpGithubApi {
                 eprintln!("[gh-rag] 代理配置无法解析({u}),回退直连");
             }
         }
-        Self { token, client: builder.build() }
+        Self {
+            token,
+            client: builder.build(),
+        }
     }
 
     /// 按 AGENTS 约定的 token 顺序解析。
