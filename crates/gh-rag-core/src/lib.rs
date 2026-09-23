@@ -5,6 +5,7 @@
 //! - 依赖方向单向:cli/mcp/web -> core
 
 pub mod api_embedder;
+pub mod cjk;
 pub mod config;
 pub mod embedder;
 pub mod github;
