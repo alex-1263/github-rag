@@ -157,6 +157,16 @@ impl ServerHandler for GhRag {
                         "state": m.state, "labels": m.labels,
                         "comments_count": m.comments_count, "updated_at": m.updated_at,
                         "body": m.body.chars().take(8000).collect::<String>(),
+                        // 讨论内容(时间序;总预算 4000 字符防上下文膨胀;含 bot,agent 自行取舍)
+                        "comments": m.comments.as_ref().map(|cs| {
+                            let mut out = String::new();
+                            for c in cs {
+                                if out.chars().count() > 4000 { break; }
+                                out.push_str(&format!("[- {}] {}\n", c.author,
+                                    c.body.chars().take(500).collect::<String>()));
+                            }
+                            out
+                        }).unwrap_or_default(),
                         "related": related.iter().map(|(_, r, n, t, sc)| json!({
                             "repo": r, "number": n, "title": t, "score": sc
                         })).collect::<Vec<_>>(),

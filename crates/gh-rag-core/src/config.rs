@@ -38,6 +38,10 @@ pub struct ResolvedEmbedding {
     pub base: String,
     pub key: String,
     pub model: String,
+    /// 自定义输出维度(仅部分模型支持,如 qwen3.7 系 256~2560);None = 模型默认
+    pub dimensions: Option<u32>,
+    /// 单请求批量上限(硅基流动 64,百炼 16)
+    pub batch_size: usize,
 }
 
 /// config.toml `[embedding]` 段的(部分)形状;未知字段忽略,向后兼容。
@@ -47,6 +51,17 @@ struct EmbeddingSection {
     api_key: Option<String>,
     base_url: Option<String>,
     model: Option<String>,
+    dimensions: Option<u32>,
+    batch_size: Option<usize>,
+}
+
+/// 端点默认批量:硅基流动 64;其余(百炼等)16。
+fn default_batch_for(base: &str) -> usize {
+    if base.contains("siliconflow") {
+        64
+    } else {
+        16
+    }
 }
 
 pub fn gh_rag_home() -> std::path::PathBuf {
@@ -188,7 +203,16 @@ pub fn resolve_with_home(home: std::path::PathBuf) -> Result<ResolvedEmbedding> 
         .or(section.api_key.clone())
         .unwrap_or_default();
 
-    Ok(ResolvedEmbedding { base, key, model })
+    let batch_size = section
+        .batch_size
+        .unwrap_or_else(|| default_batch_for(&base));
+    Ok(ResolvedEmbedding {
+        base,
+        key,
+        model,
+        dimensions: section.dimensions,
+        batch_size,
+    })
 }
 
 #[cfg(test)]

@@ -8,6 +8,7 @@ pub mod api_embedder;
 pub mod config;
 pub mod embedder;
 pub mod github;
+pub mod raw;
 pub mod retrieve;
 pub mod store;
 pub mod sync;

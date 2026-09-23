@@ -1,6 +1,6 @@
 //! GithubApi:GitHub issues 拉取的 trait 抽象 + HTTP 实现。
 //!
-//! 分层(AGENTS 测试纪律):`parse_page` 是纯函数(单测覆盖,含 PR 过滤/字段映射);
+//! 分层(AGENTS 测试纪律):`parse_page` / `parse_comments` 是纯函数(单测覆盖);
 //! `HttpGithubApi` 只做分页循环与鉴权,不掺解析逻辑。测试用假 trait 实现,零网络。
 
 use crate::{Error, Result};
@@ -9,9 +9,17 @@ use crate::store::IssueMeta;
 
 /// GitHub 拉取口(sync 唯一数据源)。
 pub trait GithubApi {
-    /// 拉取仓库全部 issue(state=all);`since`(ISO8601)存在时只拉 updated_at > since 的。
-    /// 返回值不含 PR(GitHub issues API 会混入,parse 层过滤)。
+    /// 拉取仓库全部 issue(state=all);`since`(ISO8601)存在时只拉 updated_at >= since 的。
     fn iter_issues(&self, repo: &str, since: Option<&str>) -> Result<Vec<IssueMeta>>;
+
+    /// 仓库级评论(cursor 分页);`since` 增量游标。默认空(测试假 API 按需覆盖)。
+    fn iter_comments(
+        &self,
+        _repo: &str,
+        _since: Option<&str>,
+    ) -> Result<Vec<crate::raw::RawComment>> {
+        Ok(Vec::new())
+    }
 }
 
 /// 单条 GitHub issues API JSON 的(部分)形状。
@@ -36,7 +44,28 @@ pub struct GhLabel {
     pub name: String,
 }
 
-/// 解析一页 JSON → IssueMeta 列表(PR 过滤在此)。
+/// issue 评论(聚合进嵌入文本;author 保留语义角色)。
+#[derive(Clone, Debug, PartialEq)]
+pub struct Comment {
+    pub author: String,
+    pub body: String,
+}
+
+#[derive(serde::Deserialize)]
+struct GhComment {
+    id: i64,
+    user: Option<GhUser>,
+    body: Option<String>,
+    issue_url: Option<String>,
+    created_at: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct GhUser {
+    login: String,
+}
+
+/// 解析一页 JSON → IssueMeta 列表(PR 过滤在此;评论由 HTTP 层按需补拉)。
 pub fn parse_page(repo: &str, body: &str) -> Result<Vec<IssueMeta>> {
     let raw: Vec<GhIssue> = serde_json::from_str(body)
         .map_err(|e| Error::Io(std::io::Error::other(format!("github json: {e}"))))?;
@@ -52,7 +81,37 @@ pub fn parse_page(repo: &str, body: &str) -> Result<Vec<IssueMeta>> {
             state: i.state,
             labels: i.labels.into_iter().map(|l| l.name).collect(),
             comments_count: i.comments,
+            comments: None,
             updated_at: i.updated_at,
+        })
+        .collect())
+}
+
+/// issue_url 尾段提取编号:.../repos/o/r/issues/123 → 123
+fn number_from_issue_url(url: &str) -> Option<i64> {
+    url.rsplit('/').next()?.parse().ok()
+}
+
+/// 解析仓库级评论页 JSON → RawComment(带 id/归属/时间);空评论过滤,时间序即返回序。
+pub fn parse_comments_page(body: &str) -> Result<Vec<crate::raw::RawComment>> {
+    let raw: Vec<GhComment> = serde_json::from_str(body)
+        .map_err(|e| Error::Io(std::io::Error::other(format!("github comments json: {e}"))))?;
+    Ok(raw
+        .into_iter()
+        .filter_map(|c| {
+            let body = c.body?;
+            let number = number_from_issue_url(c.issue_url.as_deref()?)?;
+            if body.trim().is_empty() {
+                None
+            } else {
+                Some(crate::raw::RawComment {
+                    id: c.id,
+                    issue_number: number,
+                    author: c.user.map(|u| u.login).unwrap_or_default(),
+                    body,
+                    created_at: c.created_at.unwrap_or_default(),
+                })
+            }
         })
         .collect())
 }
@@ -93,54 +152,85 @@ impl HttpGithubApi {
         };
         Ok(Self::from_token(token))
     }
+
+    fn get(&self, url: &str) -> Result<(String, Option<String>)> {
+        let resp = self
+            .client
+            .get(url)
+            .set("Authorization", &format!("Bearer {}", self.token))
+            .set("Accept", "application/vnd.github+json")
+            .set("User-Agent", "gh-rag")
+            .call();
+        match resp {
+            Ok(r) => {
+                let next = link_next(r.header("Link"));
+                let body = r
+                    .into_string()
+                    .map_err(|e| Error::Io(std::io::Error::other(format!("github body: {e}"))))?;
+                Ok((body, next))
+            }
+            Err(ureq::Error::Status(403, r)) | Err(ureq::Error::Status(429, r)) => {
+                let body = r.into_string().unwrap_or_default();
+                Err(Error::Io(std::io::Error::other(format!(
+                    "github rate-limited: {}",
+                    body.chars().take(160).collect::<String>()
+                ))))
+            }
+            Err(ureq::Error::Status(code, _)) => Err(Error::Io(std::io::Error::other(format!(
+                "github http {code}: {url}"
+            )))),
+            Err(e) => Err(Error::Io(std::io::Error::other(format!("github: {e}")))),
+        }
+    }
+}
+
+/// cursor 分页:GitHub 对大数据集禁用 page>100(HTTP 422),
+/// 唯一可靠姿势 = 跟随响应头 `Link: <...>; rel="next"` 游标。
+fn link_next(link: Option<&str>) -> Option<String> {
+    let link = link?;
+    for part in link.split(',') {
+        let part = part.trim();
+        if part.ends_with(r#"; rel="next""#) {
+            let u = part.strip_prefix('<')?.strip_suffix(r#">; rel="next""#)?;
+            return Some(u.to_string());
+        }
+    }
+    None
 }
 
 impl GithubApi for HttpGithubApi {
     fn iter_issues(&self, repo: &str, since: Option<&str>) -> Result<Vec<IssueMeta>> {
+        let mut url = format!("https://api.github.com/repos/{repo}/issues?state=all&per_page=100");
+        if let Some(s) = since {
+            url.push_str(&format!("&since={s}"));
+        }
         let mut all = Vec::new();
-        let mut page = 1u32;
-        loop {
-            let mut url = format!(
-                "https://api.github.com/repos/{repo}/issues?state=all&per_page=100&page={page}"
-            );
-            if let Some(s) = since {
-                url.push_str(&format!("&since={s}"));
-            }
-            let resp = self
-                .client
-                .get(&url)
-                .set("Authorization", &format!("Bearer {}", self.token))
-                .set("Accept", "application/vnd.github+json")
-                .set("User-Agent", "gh-rag")
-                .call();
-            let resp = match resp {
-                Ok(r) => r,
-                Err(ureq::Error::Status(403, r)) | Err(ureq::Error::Status(429, r)) => {
-                    let body = r.into_string().unwrap_or_default();
-                    return Err(Error::Io(std::io::Error::other(format!(
-                        "github rate-limited (page {page}): {}",
-                        body.chars().take(160).collect::<String>()
-                    ))));
-                }
-                Err(ureq::Error::Status(code, _r)) => {
-                    return Err(Error::Io(std::io::Error::other(format!(
-                        "github http {code}: repo={repo}"
-                    ))));
-                }
-                Err(e) => {
-                    return Err(Error::Io(std::io::Error::other(format!("github: {e}"))));
-                }
-            };
-            let body = resp
-                .into_string()
-                .map_err(|e| Error::Io(std::io::Error::other(format!("github body: {e}"))))?;
+        let mut next = Some(url);
+        while let Some(u) = next {
+            let (body, n) = self.get(&u)?;
             let batch = parse_page(repo, &body)?;
-            let got = batch.len();
             all.extend(batch);
-            if got < 100 {
-                break;
-            }
-            page += 1;
+            next = n;
+        }
+        Ok(all)
+    }
+
+    fn iter_comments(
+        &self,
+        repo: &str,
+        since: Option<&str>,
+    ) -> Result<Vec<crate::raw::RawComment>> {
+        let mut url = format!("https://api.github.com/repos/{repo}/issues/comments?per_page=100");
+        if let Some(s) = since {
+            url.push_str(&format!("&since={s}"));
+        }
+        let mut all = Vec::new();
+        let mut next = Some(url);
+        while let Some(u) = next {
+            let (body, n) = self.get(&u)?;
+            let batch = parse_comments_page(&body)?;
+            all.extend(batch);
+            next = n;
         }
         Ok(all)
     }
@@ -152,29 +242,45 @@ mod tests {
 
     const PAGE: &str = r#"[
       {"id":111,"number":7,"title":"连接失败","body":"postgres 报错","state":"open",
-       "labels":[{"name":"bug"}],"comments":3,"updated_at":"2026-09-01T00:00:00Z"},
+       "labels":[{"name":"bug"}],"comments":1,"updated_at":"2026-09-01T00:00:00Z"},
       {"id":222,"number":8,"title":"PR 项","body":"x","state":"open",
        "labels":[],"comments":0,"updated_at":"2026-09-02T00:00:00Z",
-       "pull_request":{"url":"https://api.github.com/repos/a/b/pulls/8"}},
-      {"id":333,"number":9,"title":null,"body":null,"state":"closed",
-       "labels":[{"name":"p1"},{"name":"ui"}],"comments":10,"updated_at":"2026-09-03T00:00:00Z"}
+       "pull_request":{"url":"https://api.github.com/repos/a/b/pulls/8"}}
     ]"#;
 
     #[test]
     fn parse_page_filters_pr_and_maps_fields() {
         let v = parse_page("a/b", PAGE).unwrap();
-        assert_eq!(v.len(), 2, "PR 应被过滤");
+        assert_eq!(v.len(), 1, "PR 应被过滤");
         assert_eq!(v[0].number, 7);
-        assert_eq!(v[0].title, "连接失败");
+        assert_eq!(v[0].comments_count, 1);
+        assert_eq!(v[0].comments, None, "评论由 sync 层从仓库级端点聚合");
         assert_eq!(v[0].labels, vec!["bug"]);
-        assert_eq!(v[0].comments_count, 3);
-        // null 字段安全映射
-        assert_eq!(v[1].title, "");
-        assert_eq!(v[1].labels.len(), 2);
+    }
+    #[test]
+    fn parse_comments_page_groups_by_issue_url() {
+        let raw = r#"[
+          {"id":1,"user":{"login":"alice"},"body":"复现步骤:连接串带空格",
+           "issue_url":"https://api.github.com/repos/a/b/issues/1028","created_at":"2026-09-01T00:00:00Z"},
+          {"id":2,"user":{"login":"bob"},"body":"   ",
+           "issue_url":"https://api.github.com/repos/a/b/issues/1","created_at":"2026-09-02T00:00:00Z"},
+          {"id":3,"user":null,"body":"bot 留言","issue_url":"https://api.github.com/repos/a/b/issues/2","created_at":"2026-09-03T00:00:00Z"}
+        ]"#;
+        let v = parse_comments_page(raw).unwrap();
+        assert_eq!(v.len(), 2, "空白评论过滤");
+        assert_eq!(v[0].issue_number, 1028, "归属编号提取");
+        assert_eq!(v[0].author, "alice");
+        assert_eq!(v[1].author, "");
     }
 
     #[test]
-    fn parse_page_empty_is_ok() {
-        assert!(parse_page("a/b", "[]").unwrap().is_empty());
+    fn link_next_extracts_cursor() {
+        let h = r#"<https://api.github.com/repositories/1/issues?after=abc&per_page=100>; rel="next", <https://api.github.com/repositories/1/issues?after=zzz>; rel="last""#;
+        assert_eq!(
+            link_next(Some(h)).as_deref(),
+            Some("https://api.github.com/repositories/1/issues?after=abc&per_page=100")
+        );
+        assert_eq!(link_next(Some(r#"<x>; rel="last""#)), None);
+        assert_eq!(link_next(None), None);
     }
 }

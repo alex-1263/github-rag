@@ -66,11 +66,12 @@ fn sync(repo: Option<String>, all: bool) -> anyhow::Result<()> {
 
     for repo in repos {
         println!("sync {repo} …");
-        let r = sync_repo(&github, &store, &embedder, &repo, &params)
+        let home = gh_rag_core::config::gh_rag_home();
+        let r = sync_repo(&github, &store, &embedder, &repo, &params, &home)
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         println!(
-            "  拉取 {} 条:嵌入 {},跳过(未变更){}",
-            r.fetched, r.embedded, r.skipped
+            "  拉取 {} 条 / 评论 {}:嵌入 {},跳过 {}",
+            r.fetched, r.comments_fetched, r.embedded, r.skipped
         );
     }
     Ok(())

@@ -22,6 +22,8 @@ pub struct IssueMeta {
     pub state: String,
     pub labels: Vec<String>,
     pub comments_count: i64,
+    /// 评论内容(时间序);None = 从未拉取(存量兼容),Some = 已聚合
+    pub comments: Option<Vec<crate::github::Comment>>,
     pub updated_at: String,
 }
 
@@ -42,6 +44,8 @@ impl IssueStore {
         }
         let db = Connection::open(db_path)?;
         db.pragma_update(None, "journal_mode", "WAL")?;
+        // 幂等迁移:CREATE IF NOT EXISTS 补新表(如 issue_comments)
+        db.execute_batch(SCHEMA)?;
         Ok(Self { db })
     }
 
@@ -161,6 +165,7 @@ impl IssueStore {
         let rows = stmt
             .query_map(rusqlite::params_from_iter(ids.iter()), |r| {
                 Ok(IssueMeta {
+                    comments: None,
                     id: r.get(0)?,
                     repo: r.get(1)?,
                     number: r.get(2)?,
@@ -176,13 +181,35 @@ impl IssueStore {
         Ok(rows)
     }
 
+    /// 读单条 issue 的评论(时间序 = 写入序)。
+    fn comments_of(&self, issue_id: i64) -> Result<Vec<crate::github::Comment>> {
+        let mut stmt = self
+            .db
+            .prepare("SELECT author, body FROM issue_comments WHERE issue_id=?1 ORDER BY idx")?;
+        let rows = stmt
+            .query_map([issue_id], |r| {
+                Ok(crate::github::Comment {
+                    author: r.get(0)?,
+                    body: r.get(1)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     pub fn get_issue(&self, repo: &str, number: i64) -> Result<Option<IssueMeta>> {
         let mut stmt = self.db.prepare(
             "SELECT id, repo, number, title, body, state, labels, comments_count, updated_at \
              FROM issues WHERE repo = ? AND number = ?",
         )?;
         let mut rows = stmt.query_map([repo, &number.to_string()], map_meta)?;
-        Ok(rows.next().transpose()?)
+        match rows.next().transpose()? {
+            Some(mut m) => {
+                m.comments = Some(self.comments_of(m.id)?);
+                Ok(Some(m))
+            }
+            None => Ok(None),
+        }
     }
 
     pub fn get_embedding_blob(&self, issue_id: i64) -> Result<Option<Vec<u8>>> {
@@ -329,9 +356,59 @@ impl IssueStore {
                 };
                 fts_ins.execute(rusqlite::params![real_id, it.meta.title, it.meta.body])?;
                 vec_put.execute(rusqlite::params![real_id, it.embedding])?;
+                // 评论整组替换(Some = 本批已聚合;None = 保持存量不动)
+                if let Some(cs) = &it.meta.comments {
+                    tx.execute("DELETE FROM issue_comments WHERE issue_id=?1", [real_id])?;
+                    for (idx, c) in cs.iter().enumerate() {
+                        tx.execute(
+                            "INSERT OR REPLACE INTO issue_comments(issue_id,idx,author,body) VALUES(?1,?2,?3,?4)",
+                            rusqlite::params![real_id, idx as i64, c.author, c.body],
+                        )?;
+                    }
+                }
             }
         }
         tx.commit()?;
+        Ok(())
+    }
+
+    /// 仅更新元数据与评论(hash 未变、向量保留):嵌入跳过但讨论内容要落库。
+    pub fn upsert_meta_and_comments(&self, m: &IssueMeta) -> Result<()> {
+        let labels = serde_json::to_string(&m.labels).unwrap_or_else(|_| "[]".to_string());
+        self.db.execute(
+            "UPDATE issues SET title=?1, body=?2, state=?3, labels=?4,
+                comments_count=?5, updated_at=?6 WHERE repo=?7 AND number=?8",
+            rusqlite::params![
+                m.title,
+                m.body,
+                m.state,
+                labels,
+                m.comments_count,
+                m.updated_at,
+                m.repo,
+                m.number
+            ],
+        )?;
+        let row_id: Option<i64> = self
+            .db
+            .query_row(
+                "SELECT id FROM issues WHERE repo=?1 AND number=?2",
+                rusqlite::params![m.repo, m.number],
+                |r| r.get(0),
+            )
+            .ok();
+        if let Some(id) = row_id {
+            if let Some(cs) = &m.comments {
+                self.db
+                    .execute("DELETE FROM issue_comments WHERE issue_id=?1", [id])?;
+                for (idx, c) in cs.iter().enumerate() {
+                    self.db.execute(
+                        "INSERT OR REPLACE INTO issue_comments(issue_id,idx,author,body) VALUES(?1,?2,?3,?4)",
+                        rusqlite::params![id, idx as i64, c.author, c.body],
+                    )?;
+                }
+            }
+        }
         Ok(())
     }
 
@@ -396,6 +473,7 @@ fn map_meta(r: &rusqlite::Row<'_>) -> rusqlite::Result<IssueMeta> {
         labels: parse_labels(r.get(6)?),
         comments_count: r.get(7)?,
         updated_at: r.get(8)?,
+        comments: None,
     })
 }
 
@@ -426,6 +504,10 @@ CREATE VIRTUAL TABLE IF NOT EXISTS issues_fts USING fts5(title, body, content=''
 CREATE TABLE IF NOT EXISTS relations(
   repo TEXT, number INTEGER, kind TEXT, target_repo TEXT, target_number INTEGER,
   PRIMARY KEY(repo, number, kind, target_repo, target_number));
+CREATE TABLE IF NOT EXISTS issue_comments(
+  issue_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+  idx INTEGER NOT NULL, author TEXT, body TEXT,
+  PRIMARY KEY(issue_id, idx));
 CREATE TABLE IF NOT EXISTS sync_state(
   repo TEXT PRIMARY KEY, cursor_updated_at TEXT, last_sync_at TEXT);
 CREATE TABLE IF NOT EXISTS manifest(key TEXT PRIMARY KEY, value TEXT);

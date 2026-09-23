@@ -15,6 +15,8 @@ pub struct ApiEmbedder {
     base: String,
     key: String,
     model: String,
+    dimensions: Option<u32>,
+    batch: usize,
     client: ureq::Agent,
     _max_seq_len: usize,
 }
@@ -23,6 +25,8 @@ pub struct ApiEmbedder {
 struct EmbedRequest<'a> {
     model: &'a str,
     input: &'a [String],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dimensions: Option<u32>,
 }
 
 #[derive(serde::Deserialize)]
@@ -48,6 +52,8 @@ impl ApiEmbedder {
             base: cfg.base,
             key: cfg.key,
             model: cfg.model,
+            dimensions: cfg.dimensions,
+            batch: cfg.batch_size,
             client: ureq::AgentBuilder::new()
                 .timeout(std::time::Duration::from_secs(60))
                 .build(),
@@ -58,10 +64,11 @@ impl ApiEmbedder {
     fn call(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
         // 分批:单请求最多 64 条(服务端限制保守值)
         let mut out = Vec::with_capacity(texts.len());
-        for chunk in texts.chunks(64) {
+        for chunk in texts.chunks(self.batch.max(1)) {
             let body = EmbedRequest {
                 model: &self.model,
                 input: chunk,
+                dimensions: self.dimensions,
             };
             let resp = self.send_with_retry(&body)?;
             if resp.data.len() != chunk.len() {
@@ -162,6 +169,11 @@ impl Embedder for ApiEmbedder {
     }
 
     fn fingerprint(&self) -> EmbeddingFingerprint {
-        EmbeddingFingerprint(format!("{}|api|len=512", self.model))
+        // 维度进 model 段:不同维度 = 不同向量空间,ensure 按空间拦截
+        let model = match self.dimensions {
+            Some(d) => format!("{}[dim={}]", self.model, d),
+            None => self.model.clone(),
+        };
+        EmbeddingFingerprint(format!("{}|api|len=512", model))
     }
 }
