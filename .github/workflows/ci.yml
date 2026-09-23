@@ -22,7 +22,7 @@ concurrency:
 
 jobs:
   rust:
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/rust-rewrite' || github.event_name == 'pull_request'
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/rust-rewrite' || github.ref == 'refs/heads/dev' || github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
