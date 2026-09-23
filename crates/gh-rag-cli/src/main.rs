@@ -166,18 +166,41 @@ fn export(skeleton: bool, output: String) -> anyhow::Result<()> {
 }
 
 fn fetch(from: String) -> anyhow::Result<()> {
-    use gh_rag_core::embedder::Embedder as _;
     let home = gh_rag_core::config::gh_rag_home();
-    let tmp = home.join("fetch-download.tmp");
-    let path =
-        gh_rag_core::skeleton::download_to(&from, &tmp).map_err(|e| anyhow::anyhow!("{e}"))?;
-    let db_path =
-        gh_rag_core::skeleton::gunzip_if_needed(&path).map_err(|e| anyhow::anyhow!("{e}"))?;
 
-    // 指纹必须与本地嵌入配置一致(防向量空间混用)
-    let fp = gh_rag_core::api_embedder::ApiEmbedder::from_env()?.fingerprint();
+    // 网络下载才产生临时件;本地路径绝不触碰用户源文件
+    let is_download = from.starts_with("http://") || from.starts_with("https://");
+    let tmp = home.join("fetch-download.tmp");
+    let src = if is_download {
+        gh_rag_core::skeleton::download_to(&from, &tmp).map_err(|e| anyhow::anyhow!("{e}"))?
+    } else {
+        std::path::PathBuf::from(&from)
+    };
+    let db_path =
+        gh_rag_core::skeleton::gunzip_if_needed(&src).map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    // 指纹与 sync 落库同源组装(full_fingerprint 唯一真相源):无 key 也能 fetch,
+    // 因为导入本身只比对指纹,不需要发起嵌入请求
+    let cfg = gh_rag_core::config::resolve().map_err(|e| anyhow::anyhow!("{e}"))?;
+    let base_fp = match cfg.dimensions {
+        // 与 ApiEmbedder::fingerprint 同规则:维度进 model 段
+        Some(d) => format!("{}[dim={}]", cfg.model, d),
+        None => cfg.model.clone(),
+    };
+    let base_fp = format!("{base_fp}|api|len=512");
+    let (title_repeats, body_max_chars) = gh_rag_core::config::text_params()?;
+    let expect_fp = gh_rag_core::sync::full_fingerprint(
+        &base_fp,
+        &gh_rag_core::sync::SyncParams {
+            batch_size: 0,
+            batch_interval: Duration::ZERO,
+            title_repeats,
+            body_max_chars,
+        },
+    );
+
     let store = open_or_create_index()?;
-    let r = gh_rag_core::skeleton::import_skeleton(&db_path, &store, &fp.0)
+    let r = gh_rag_core::skeleton::import_skeleton(&db_path, &store, &expect_fp)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     println!(
         "骨架装载完成:issue/pr {} 条,向量 {} 条,指纹 {}",
@@ -185,8 +208,13 @@ fn fetch(from: String) -> anyhow::Result<()> {
         r.vectors,
         r.fingerprint.unwrap_or_default()
     );
-    let _ = std::fs::remove_file(&tmp);
-    let _ = std::fs::remove_file(&db_path);
+    // 清理仅限自己创建的临时下载件及其解压产物;用户本地源文件永不删除
+    if is_download {
+        if src != db_path {
+            let _ = std::fs::remove_file(&db_path);
+        }
+        let _ = std::fs::remove_file(&tmp);
+    }
     println!("下一步:gh-rag sync --all 补全文(内容哈希对齐,向量零重嵌)");
     Ok(())
 }

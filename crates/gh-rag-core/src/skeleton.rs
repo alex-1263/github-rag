@@ -199,18 +199,25 @@ pub fn download_to(url: &str, dest: &std::path::Path) -> Result<std::path::PathB
     Ok(dest.to_path_buf())
 }
 
-/// .gz 则就地解压为 .sqlite,返回可用库路径;否则原样返回。
+/// gzip 内容(前两字节 0x1f 0x8b)则解压为 .sqlite,返回新路径;否则原样返回。
+/// 以 magic bytes 判定而非扩展名:URL 下载件常落为 .tmp 后缀(P1)。
 pub fn gunzip_if_needed(path: &std::path::Path) -> Result<std::path::PathBuf> {
-    if path.extension().and_then(|s| s.to_str()) != Some("gz") {
-        return Ok(path.to_path_buf());
-    }
-    use flate2::read::GzDecoder;
     use std::io::Read;
-    let f = std::fs::File::open(path)?;
-    let mut dec = GzDecoder::new(f);
+    let mut f = std::fs::File::open(path)?;
+    let mut head = [0u8; 2];
+    let n = f.read(&mut head)?;
+    if n < 2 || head != [0x1f, 0x8b] {
+        return Ok(path.to_path_buf()); // 非 gzip 原样返回
+    }
+    let mut dec = flate2::read::GzDecoder::new({
+        use std::io::Seek;
+        f.seek(std::io::SeekFrom::Start(0))?;
+        f
+    });
     let mut out = Vec::new();
     dec.read_to_end(&mut out)?;
-    let dst = path.with_extension(""); // *.sqlite.gz → *.sqlite
+    // 目标名:.gz 剥壳即得(*.sqlite.gz → *.sqlite);其余(如 fetch-download.tmp)→ 追加
+    let dst = path.with_extension("sqlite");
     std::fs::write(&dst, out)?;
     Ok(dst)
 }
@@ -219,6 +226,29 @@ pub fn gunzip_if_needed(path: &std::path::Path) -> Result<std::path::PathBuf> {
 mod tests {
     use super::*;
     use crate::embedder::EmbeddingFingerprint;
+
+    #[test]
+    fn gunzip_by_magic_bytes_regardless_of_extension() {
+        // gzip 内容存为任意后缀(.tmp)也要解压(分发链路 P1:下载件非 .gz 后缀)
+        let d = std::env::temp_dir().join(format!("gh-rag-gz-magic-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        use std::io::Write as _;
+        enc.write_all(b"not-a-sqlite-but-fine").unwrap();
+        let gz = enc.finish().unwrap();
+        let tmp = d.join("fetch-download.tmp");
+        std::fs::write(&tmp, &gz).unwrap();
+        let out = gunzip_if_needed(&tmp).unwrap();
+        assert_ne!(out, tmp, "gzip 内容必须解压为新文件");
+        assert_eq!(out.extension().and_then(|s| s.to_str()), Some("sqlite"));
+        assert_eq!(std::fs::read(&out).unwrap(), b"not-a-sqlite-but-fine");
+
+        // 非 gzip 原样返回(不误伤普通 sqlite)
+        let plain = d.join("plain.sqlite");
+        std::fs::write(&plain, b"SQLite format 3\0").unwrap();
+        assert_eq!(gunzip_if_needed(&plain).unwrap(), plain);
+    }
 
     #[test]
     fn proxy_env_resolution_prefers_https_proxy() {
