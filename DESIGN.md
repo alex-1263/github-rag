@@ -1,22 +1,16 @@
-# github-rag 项目方案(v1.2 定稿)
+# github-rag 项目方案(v2.0,与 main 分支实现对齐)
 
-> **2026-09-23 补充(v1.5)· P2 清扫落地项**:① 中文 FTS bigram 方案已落地(CJK 游程切双字组建索引与查询,幂等迁移重建存量索引);② 指纹含文本组装参数(tr/body/cq/cc),参数变更强制重建;③ 同步限流三项落地(进程内 200ms 节流、429 Retry-After、x-ratelimit 剩余额度等待)。默认 provider 定稿 **siliconflow**(免费 bge-m3,开箱即用);生产推荐 **aliyun**(百炼 qwen3.7)或 **custom**(自建端点)。明确不做:PR merged/closed 状态区分——需逐 PR 调 pulls API,成本与检索收益不成比例,暂不做。
-
-> **2026-09-23 补充(v1.4.2)· 数据贡献机制(gh-rag-indexes)**:分发仓库 = `gh-rag-indexes`(纯 Release 载体),产物命名 `{repo}-{model}-{dim}-{date}.sqlite.gz` + 库内 fingerprint 三级对账。贡献两条流:**① 加仓库名**——PR 改 `repos.toml` 一行,merge 后维护者 key 跑 CI 构建;**② 自助构建**——贡献者 fork 本仓库,在自己 fork 的 Secrets 里配自己的 `EMBED_API_KEY`,`workflow_dispatch` 跑**同一份构建 workflow**(workflow 即产出规格:骨架格式/命名/校验全部统一),产物上传自己 fork 的 Release,PR 只加 manifest 条目(url+模型+维度+sha256)。骨架包(向量+元数据,无全文)进分发;`gh-rag fetch` 拉取→**指纹校验+安全导入(只读连接拷白名单表列,零执行外来 SQL)**→本地 `sync` 补全文(hash 对齐零重嵌)。CI 对陌生人骨架包校验:指纹合法/维度一致/**不含正文与评论文本**(版权红线自动卡)。红线:`pull_request_target` 一律不用(fork PR 在带 secrets 上下文跑代码 = 秘钥泄露经典漏洞);PR 触发的校验 job 零 secrets。
-> **2026-09-23 补充(v1.4.1)· 索引分发形态修正**:issue/PR 正文与评论为用户版权内容(GitHub ToS),整库分发踩线。M3 分发改为**「向量 + 元数据 + hash」Release asset(衍生数据,~35MB)+ 用户本地 `sync` 补全文**(走 API = 正当阅读,版权不越权;hash 对齐使向量零重嵌)——比原「摘要+溯源」方案更优,版权边界更干净且保留完整检索能力。
-> **2026-09-23 能力扩展(v1.4)**:PR 入库(kind 区分,与 issue 同检索流);评论全链路(仓库级端点采集 → 嵌入聚合 → 落库 → MCP 透出);raw 原始层(gzip)使索引重建零 API;嵌入切换为 qwen3.7-text-embedding-flash(百炼,128K 窗口,1024 维经五档扫描实验确认);嵌入文本剥离图片 URL。M2 建库完成,下一步 M2.5 relations。
-> **2026-09-21 架构收敛(v1.3)**:本地 ONNX 推理与 Python 验证版整体退役。嵌入统一走 HTTP(默认硅基流动 bge-m3;`GH_RAG_API_BASE` 可指任意 OpenAI 兼容端点,含 ollama)。MCP server 单二进制 6.6MB。黄金对齐 fixtures 冻结为永久基准,测试形态改为 API 对齐(`api_golden.rs`),阈值 0.999 不变。M2 建库(Rust+API)成为唯一增量路径。下文涉及本地模型/双分支的段落以本注记为准。
-> 2026-09-20(v1.2 增补 §3.8 CLI/MCP 契约;v1.1 增补两步法路线)。本文档收敛了全部调研、架构讨论与四份 GLM-5.3 独立评估的修正意见,是开工依据。
+> 本版整合 v1.2→v1.5 全部增补注记为连贯正文:技术描述以当前代码为准(2026-09-23),旧方案(本地推理/Python 验证版/GraphQL/ETag)已按实际落地情况改写或降级标注。
 > 姊妹文档:`PROPOSAL.md`(评估输入版,含竞品调研细节)。
 
 ## 1. 一页纸摘要
 
 **两个项目,一个引擎:**
 
-- **项目 A「gh-rag」**:给多仓库维护者/开发者的 issue 语义记忆层。跨仓库语义检索 + agent 上下文包,MCP 形态供 Claude Code / Copilot 等消费。开源、不商业化、本地优先。
-- **项目 B「bugcards」**:社区共建的生态级故障经验卡片库(markdown 仓库 + 程序化锚定字段 + 评审信任标记)。**冻结,A 验证通过后启动。**
+- **项目 A「gh-rag」**:给多仓库维护者/开发者的 issue/PR 语义记忆层。跨仓库混合检索 + agent 上下文包,MCP 形态供 Claude Code / Copilot 等消费。开源(MIT)、不商业化、本地优先。
+- **项目 B「bugcards」**:社区共建的生态级故障经验卡片库(markdown 仓库 + 程序化锚定字段 + 评审信任标记)。**冻结,A 验收通过后启动。**
 
-**立项逻辑**:AI 时代 issue 爆炸是真实且加速的痛点;官方(Copilot 语义搜索已 GA、duplicate detection preview)覆盖了单仓库 + Copilot 订阅者;**我们的锚点是官方结构性不做的层:跨 org 聚合、私有数据自托管、任意 agent 的开放 MCP 消费、非热门项目的长尾维护者。**
+**立项逻辑**:AI 时代 issue 爆炸是真实且加速的痛点;官方(Copilot 语义搜索 GA)覆盖单仓库 + Copilot 订阅者;**锚点是官方结构性不做的层:跨 org 聚合、私有数据自托管、任意 agent 的开放 MCP、长尾维护者。**
 
 **核心纪律**(来自评估的最大教训):
 1. 验证对象是「agent 消费 context pack 是否可测量提升开发质量」,不是「自己爱不爱用」
@@ -33,233 +27,191 @@ AI 编码普及导致开源 issue 爆炸:数量(门槛消失)、重复(相似 pr
 
 | 对手 | 状态 | 与我们的错位 |
 |---|---|---|
-| GitHub 官方 | 语义 issue 搜索已 GA(2026-05,付费 Copilot 计划,热门开源维护者免费 Pro);duplicate detection preview;relates-to | 单仓库、绑 Copilot 生态、不做跨 org/自托管/开放 MCP |
-| unsight.dev | 136★,Nuxt 负责人个人项目,embedding+聚类,索引 nuxt 系 | 自用溢出,无 MCP/agent 接口,分发受限 |
-| 小项目群 | 2-12★,查重 Action / FAISS MCP / 分析脚本 | 无一个做完整 |
+| GitHub 官方 | 语义 issue 搜索已 GA(付费 Copilot 计划);duplicate detection preview | 单仓库、绑 Copilot 生态、不做跨 org/自托管/开放 MCP |
+| unsight.dev | Nuxt 负责人个人项目,embedding+聚类 | 自用溢出,无 MCP/agent 接口 |
+| 小项目群 | 查重 Action / FAISS MCP / 分析脚本 | 无一个做完整 |
 | VoC SaaS(Enterpret 类) | 商业成立 | 进不了私有数据场景 |
 
-### 2.3 差异化定位(唯一可守的阵地)
+### 2.3 差异化定位
 
 ```
-跨 org 语义记忆 + 私有数据不出域 + 任意 agent 的 MCP 消费 + 白送的显式关系图(duplicate/sub-issue/linked PR)
+跨 org 语义记忆 + 私有数据不出域 + 任意 agent 的 MCP 消费 + relations 关系图(M2.5)
 ```
 
-## 3. 项目 A:MVP 完整设计
+## 3. 项目 A:现行实现设计
 
 ### 3.1 范围与非目标
 
-**做:**
+**做(已做):**
 
 | 能力 | 说明 |
 |---|---|
-| 多仓库同步 | GraphQL 增量(updated_at 游标),全量 + lazy catch-up(TTL 10 分钟) |
-| 语义索引 | bge-m3 本地 embedding,**向量存 BLOB 列** + FTS5,单文件 `index.sqlite`(跨语言兼容,见 3.8) |
-| 混合检索 | 向量 + BM25 → RRF 融合 →(插槽)rerank |
-| MCP 服务 | 3 个工具:`search_issues` / `get_issue_context` / `find_related` |
-| 质量地基 | query_log 第一天埋点;duplicate 对评测集;RAGAS 集成 |
-| 关系图存储 | `relations` 表存 API 白送的显式关系(MVP 只存不查,Phase 2 检索增强) |
+| 多仓库同步 | REST issues API + 仓库级评论端点,双 since 游标增量;cursor 分页(Link header) |
+| issue + PR 同库 | kind 区分(state 可过滤),与 issue 同检索流——「报错」与「修复它的 PR」同场命中 |
+| 评论全链路 | 采集 → 嵌入聚合(bot 过滤)→ issue_comments 落库 → MCP 透出 |
+| 语义索引 | **纯 API 嵌入**(provider 预设可切),向量存 BLOB 列 + FTS5(CJK bigram),单文件 index.sqlite |
+| 混合检索 | 向量 + BM25 → RRF 融合 →(插槽)rerank;检索参数从 config 读 |
+| MCP 服务 | 4 工具:search_issues / get_issue_context(含评论) / find_related / list_repos |
+| raw 原始层 | gzip JSONL,API 只打一次,索引重建零拉取 |
+| 骨架分发 | 向量+元数据(无全文)Release 资产 + `fetch` 安全导入 + 本地 sync 补全文(零重嵌) |
+| 质量地基 | query_log(含 filters/follow_up 定向)+ `gh-rag report` 报表 |
 
-**不做(MVP 非目标):**
+**不做(裁决记录):** 聚类/晨报(评估否定)、自动查重/写操作、GitHub App/webhook(Phase 2)、Web UI(M4)、PR merged/closed 区分(需逐 PR 调 pulls API,成本不成比例)、base+delta 分发(骨架分发已覆盖)。
 
-聚类/晨报(定位已被评估否定)、自动查重/写操作、base+delta 分发、GitHub App/webhook、Web UI、Jira 适配、ACL、B 的抽取管道。
+### 3.2 系统架构(现行)
 
-### 3.2 系统架构
-
-```mermaid
-flowchart TB
-    subgraph sync["gh-rag sync(PAT 认证,可写)"]
-        A1[GraphQL API<br/>updated_at 游标增量<br/>ETag 条件请求] --> A2[配额感知/断点续传<br/>串行+200ms 间隔]
-        A2 --> A3[嵌入文本组装<br/>title×2 + body 前 512 token]
-        A3 --> A4[bge-m3 int8<br/>本地 CPU]
-    end
-    subgraph db["index.sqlite(单文件)"]
-        B1[(issues 元数据)]
-        B2[(issues_vec BLOB 向量列)]
-        B3[(issues_fts FTS5)]
-        B4[(relations)]
-        B5[(sync_state / manifest / query_log)]
-    end
-    sync --> db
-    subgraph serve["gh-rag serve(MCP,只读)"]
-        C1[search_issues] --> C2[向量召回 ∥ BM25 召回]
-        C2 --> C3[RRF 融合 top-30]
-        C3 --> C4[插槽: bge-reranker-v2-m3<br/>默认关,验收不达标才开]
-        C4 --> C5[query_log 记录]
-    end
-    db --> serve
-    serve --> D[Claude Code / Copilot / 任意 MCP 客户端]
+```
+GitHub API ──cursor 分页──→ raw 原始层(gzip JSONL,逐页落盘断点)
+                                │  重建索引零 API
+                                ▼
+              build_text(标题×2 + 正文截断 + 评论聚合,图片URL剥离)
+                                │  sha1 内容哈希(含评论)→ 变了才重嵌
+                                ▼
+             嵌入(HTTP:aliyun/siliconflow/ollama/custom,批量+429退避)
+                                ▼
+                    index.sqlite(issues/vec/FTS5/comments/manifest)
+                                ▼
+        MCP serve:向量召回 ∥ BM25召回(CJK bigram)→ RRF → query_log
 ```
 
-### 3.3 数据 Schema(DDL 摘要)
+### 3.3 数据 Schema(现行 DDL 摘要)
 
 ```sql
 CREATE TABLE issues (
-  repo TEXT NOT NULL, number INTEGER NOT NULL,
-  title TEXT, body TEXT, state TEXT, labels TEXT,  -- JSON array
+  id INTEGER PRIMARY KEY, repo TEXT, number INTEGER,
+  kind TEXT DEFAULT 'issue',           -- issue | pr
+  title TEXT, body TEXT, state TEXT, labels TEXT,  -- labels 为 JSON
   author TEXT, comments_count INTEGER,
-  created_at TEXT, updated_at TEXT,
-  embedded_text_hash TEXT,                          -- 内容变了才重嵌
-  PRIMARY KEY (repo, number)
-);
-CREATE TABLE issues_vec (                            -- BLOB 存 float32/1024,应用层暴力扫描
-  issue_id INTEGER PRIMARY KEY,
-  embedding BLOB NOT NULL                             -- sqlite-vec(vec0)仅作可选加速,非依赖
-);
-CREATE VIRTUAL TABLE issues_fts USING fts5(
-  title, body, content='', tokenize='porter unicode61'
-);  -- external content 模式,rowid 对齐 issues
-CREATE TABLE relations (
-  repo TEXT, number INTEGER, kind TEXT,             -- dup-of / sub-of / references / linked-pr
-  target_repo TEXT, target_number INTEGER,
-  PRIMARY KEY (repo, number, kind, target_repo, target_number)
-);
-CREATE TABLE sync_state (
-  repo TEXT PRIMARY KEY, cursor_updated_at TEXT, page_cursor TEXT,
-  etag TEXT, last_sync_at TEXT
-);
-CREATE TABLE manifest (                             -- 环境钉死,一致性对账依据
-  key TEXT PRIMARY KEY, value TEXT
-);  -- bge_m3_version / quantization / sqlite_vec_version / schema_version
-CREATE TABLE query_log (
-  id INTEGER PRIMARY KEY, ts TEXT, tool TEXT, query TEXT,
-  filters TEXT, results TEXT,                       -- 返回的 repo#number 列表
-  follow_up TEXT                                    -- 后续是否 get_issue_context(点击信号)
-);
+  created_at TEXT, updated_at TEXT, embedded_hash TEXT,
+  UNIQUE(repo, number));
+CREATE TABLE issues_vec (issue_id INTEGER PRIMARY KEY, embedding BLOB NOT NULL);
+CREATE VIRTUAL TABLE issues_fts USING fts5(title, body, content='');
+  -- unicode61 + 应用层 CJK 双字组变换(索引与查询同变换);manifest fts_cjk 标记幂等迁移
+CREATE TABLE issue_comments (issue_id, idx, author, body, PRIMARY KEY(issue_id, idx));
+CREATE TABLE relations (repo, number, kind, target_repo, target_number, PRIMARY KEY(...));
+  -- M2.5 落地(fixes/closes 提及图)
+CREATE TABLE sync_state (repo TEXT PRIMARY KEY, cursor_updated_at TEXT, last_sync_at TEXT);
+CREATE TABLE manifest (key TEXT PRIMARY KEY, value TEXT);
+  -- embedding_fp(含组装参数)/ schema_version / fts_cjk
+CREATE TABLE query_log (id, ts, tool, query, filters, results, follow_up);
 ```
 
-写入规则:issue 变更 = 同一事务内 `DELETE`+`INSERT`;MCP server 只读,写操作全走 sync(绕开单写者锁)。**BLOB + 应用层扫描是刻意的跨语言设计**:vec0 表依赖各语言对 sqlite-vec 扩展的移植(Rust 经 rusqlite 可加载,但 Go 纯实现 modernc 无 loadable extension 机制读不了);BLOB 方案任何语言零障碍,且 Rust 手写 SIMD 扫描性能不低于 sqlite-vec 的 C 实现。
+写入规则:upsert 单事务(id 稳定,contentless FTS 删旧插新);嵌入跳过时评论仍落库(两动作解耦);MCP 检索只读。
 
-### 3.4 同步引擎与限流工程
+### 3.4 同步引擎与限流(现行 vs 原承诺)
 
-| 措施 | 实现 |
+| 措施 | 状态 |
 |---|---|
-| 认证 | PAT(5,000 请求/h / GraphQL 5,000 点/h);Phase 2 升级 GitHub App token(15,000/h)+ webhook |
-| 用量核算 | 日常增量 ~12 点/h(0.1% 配额);1 万条全量 ~400 点;20 万条 ~8 千点,跨小时断点跑 |
-| 断点续传 | sync_state 记游标 + 分页 cursor,中断续跑 |
-| 配额感知 | 读 `x-ratelimit-remaining`,<200 则 sleep 到 reset |
-| ETag 条件请求 | 304 不扣配额,轮询实际消耗趋近于零 |
-| 二级限流规避 | 串行请求,翻页间 200ms;尊重 Retry-After |
+| 认证 PAT(GH_RAG_TOKEN > config > gh auth) | ✅ |
+| 翻页间 200ms 进程级节流 | ✅ |
+| 尊重 Retry-After(403/429 重试≤3) | ✅ |
+| 配额感知(x-ratelimit-remaining <200 等待至 reset) | ✅ |
+| 断点:逐页流式落 raw(中途崩溃已拉页不丢) | ✅ |
+| ~~ETag 条件请求(304 不扣配额)~~ | ❌ **降级**:issues 列表端点响应体随游标变化,ETag 命中率存疑,暂不实现 |
+| ~~跨 run 分页断点(page_cursor)~~ | ❌ **降级**:崩溃后重跑从游标重拉(raw 去重保证数据不重,API 配额重耗一次);20 万条级仓库再评估 |
 
 ### 3.5 检索管线与质量保证
 
-**管线**:`title×2 + body512` 嵌入 → 向量召回 ∥ FTS5 召回(各 top-30)→ RRF 融合 →(可选)bge-reranker-v2-m3 int8(本地 CPU,50 候选亚秒级)→ top-5。**Rerank 默认关闭**,触发条件:top-5 垃圾率 >30%,或两段式点击率低。Agent 两段式设计本身就是 LLM-as-reranker 兜底。
+**管线**:`title×2 + body 3000 + 评论配额 3000/单条500` 嵌入 → 向量 ∥ BM25(CJK bigram)各 top-30 → RRF → top-5。**Rerank 插槽保留默认关**(触发条件:top-5 垃圾率 >30%,以 report 数据裁决;免费 bge-reranker 区分度已实测优于付费 8B)。
 
-**质量系统**(行业验证过的三件套,直接采纳):
+**质量系统**:
+1. ✅ 点击日志(query_log + follow_up 定向标记 + report 报表)
+2. ⏳ 评测集(duplicate 对 + RAGAS)——**未建**,验收前落地
+3. ⏳ 回归门禁(评测集就位后接 CI)
 
-1. **评测集**:抓目标仓库历史 duplicate 对(维护者亲口确认的 ground truth,自动脚本化)+ 20 条真实使用查询;接 **RAGAS** 算 context precision/recall,不自研指标
-2. **点击日志**:两段式工具的「摘要→拉全文」行为 = 免费相关性标注,定期蒸馏进评测集
-3. **回归门禁**:管线/参数改动跑评测集,指标倒退即拦截
+**性能红线**:单实例 ≤10 万条(6.6k 条实测库内检索 ~30ms);超限先降维(512 实测重叠 87%),再考虑 ANN。
 
-**性能红线**:单实例 ≤10 万条(应用层暴力扫描 ~20-50ms);超限先 int8 量化,再考虑引擎替换。超限触发换 LanceDB,服务化触发换 Qdrant——`IssueStore` 窄接口保底。
-
-### 3.6 MCP 工具签名
-
-```
-search_issues(query: str, repos?: str[], state?: open|closed|all,
-              labels?: str[], top_k?: int = 5)
-  → [{repo, number, title, score, snippet}]
-
-get_issue_context(repo: str, number: int)
-  → {issue 全文, labels, 相关 top-5 摘要, relations(dup/sub/linked-PR)}
-
-find_related(repo: str, number: int, top_k?: int = 10)
-  → [{repo, number, title, score}]
-```
-
-### 3.7 依赖与技术栈(两期)
-
-**验证期(Phase 0–1.5,Python,不分发)**:核心依赖 ≤5:`sentence-transformers`(或 ONNX runtime)、`mcp`、`gql`(或 httpx 手写)、`typer`、`ragas`(评测)。自用阶段无分发摩擦,Python 的生态与速度全部兑现。
-
-**发布期(Phase 2a 起,Rust 单二进制)**:`rusqlite`(bundled + FTS5)、`rmcp`(官方 Rust MCP SDK)、`ort` + `tokenizers`(ONNX 进程内推理,或 ollama sidecar 二选一)、`cynic`(GraphQL)、`clap`。GoReleaser 全平台单文件分发。**B 的抽取管道、评测脚本、CI 逻辑永久留在 Python 脚本域(`scripts/`,不发布)**——prompt 编排没有理由用编译语言。
-
-模型文件统一本地管理,bge-m3 版本 + 量化方式写入 manifest。
-
-### 3.8 CLI 与 MCP 契约(Phase 0 冻结,重构期不动)
-
-**架构:一个内核两个壳。** CLI 与 MCP 调用同一个同步引擎与检索器,一份 query_log、一套检索参数(存 config.toml,不写死代码)。
+### 3.6 MCP 工具签名(冻结,返回体向后兼容扩展)
 
 ```
-gh-rag init / sync <repos...> / sync --all / sync --watch   # 同步族
-gh-rag status / rebuild / doctor / eval                      # 管理(Phase 0 实现 status/rebuild/doctor)
-gh-rag search "q" [--repo ...] [--state ...] [--labels ...] [-k]  # 人类直接查(与 agent 同一结果)——**尚未提供**:人类侧暂以 `gh-rag report` / `gh-rag status` 观察,直查命令留待后续评审
-gh-rag issue <owner/repo>#N / related <owner/repo>#N         # context pack / 相似列表
-gh-rag serve [--stdio|--http]                                # MCP server
+search_issues(query, repos?, state?, labels?, top_k=5)
+  → [{repo, number, kind, title, state, snippet, score, source}]
+get_issue_context(repo, number)
+  → {issue 全文, labels, comments(讨论,预算4000字符), related, relations}
+find_related(repo, number, top_k=10) → [{repo, number, title, score}]
+list_repos() → [{repo, issues, last_sync}]
 ```
 
-| MCP 工具 | 签名 | agent 触发场景(描述文案即触发器) |
-|---|---|---|
-| `search_issues` | `(query, repos?, state?, labels?, top_k=5)` | 开发前查「是否有人提过 X」、找历史讨论 |
-| `get_issue_context` | `(repo, number)` | 深入某条 issue:全文 + 相关 top-5 + relations |
-| `find_related` | `(repo, number, top_k=10)` | 查重、扩展检索 |
-| `list_repos` | `()` | 查询前自检已索引范围与新鲜度 |
+### 3.7 技术栈(已收敛为单一形态)
 
-Phase 0 最小集:`init` / `sync` / `search` / `serve` + 上述 4 工具。命令名/参数形状/工具签名自此刻冻结。
+纯 Rust(core/cli/mcp 三 crate,直接依赖 8 个):rusqlite(bundled+FTS5)、rmcp、ureq、serde/serde_json、toml、thiserror、sha1、flate2。嵌入走 HTTP 无本地推理;发布走 tag 触发的多平台 Release workflow(非 GoReleaser)。**Python 于 2026-09 退役**(验证使命完成,黄金 fixtures 冻结为其遗产)。
 
-## 4. 验收与退出标准(先于开发设定)
+### 3.8 CLI(现行)
+
+```
+gh-rag sync <repo> | --all     # 全量/增量
+gh-rag status / doctor / report --days N
+gh-rag export --skeleton -o f  # 骨架导出(分发形态,唯一)
+gh-rag fetch --from <url|path> # 骨架装载(指纹校验+安全导入)
+```
+
+`search`(人类直查)暂未提供——人类侧以 report/status 观察,直查命令待后续评审(MCP 工具与 CLI 共引擎,补齐成本低)。
+
+### 3.9 数据分发(gh-rag-indexes)
+
+骨架库 = **向量 + 元数据 + 嵌入哈希,不含任何正文/评论文本**(版权模型:issue 文字归各作者,ToS D.5 仅授权 use/display/perform/fork,整库复制无授权;向量/事实元数据为衍生数据,CC-BY-4.0)。
+
+- 命名 `gh-rag-index-{repo}-{model}-{dim}-{date}.sqlite.gz`,文件名/manifest 指纹/fetch 装载校验三级对账
+- 消费:fetch(只读白名单导入,零执行外来 SQL)→ 本地 sync 补全文(hash 对齐零重嵌,实测嵌入 0 次)
+- 贡献:①repos.toml 加名(维护者 key 构建)②fork 自助(自配 EMBED_API_KEY,同一 workflow 即产出规格,PR 只交 manifest 条目)
+- 安全红线:pull_request_target 永不用;PR 校验 job 零 secrets;CI 自动卡"含全文"骨架
+
+## 4. 验收与退出标准(先于开发设定,不变)
 
 **验收(MVP 完成的定义):**
-
 1. 对 ≥2 个真实仓库连续自用 7 天
 2. query_log 证明 agent 真实调用(非手动)
 3. 20 条真实查询 top-5 命中抽查通过
 4. 记录 ≥1 次「agent 因召回历史 issue 改变行为」
 
 **kill criteria:**
-
 - 上线 30 天 0 外部用户 → 归档或重新定位
 - 3 名陌生多仓库维护者试用,7 天内全部弃用 → 假设证伪
-- Phase 2 的启动条件 = 上述验收全过 + 外部使用者出现
+- M2.5/Phase 2 启动条件 = 验收全过 + 外部使用者出现
 
-## 5. 项目 B:二期设计(冻结,启动条件见上)
+## 5. 项目 B:二期设计(冻结)
 
 **形态**:markdown 卡片仓库,一 bug 一文件。frontmatter:`id/symptoms/root_cause/fix_pr/affected_versions/stack[]/source_issue/reviewed/reviewer` + 正文叙事。
 
-**分片**:按技术类型 7-10 个一级目录(frontend/k8s-cloud/database/ai-ml/devops/mobile/lang-runtime),**物理分片管分发与重建,frontmatter 多值 stack 标签管检索归属**;索引用 SQLite 分片(MoE 式路由:stack 直路由 + 无栈广播扇出 RRF 合并),单片超 10 万条再换 LanceDB。
+**生产管道**(复用 A 资产):`label:bug 且有关联修复 PR` 入口 → LLM 结构化抽取(「放弃」合法)→ 双模型交叉验证 + 程序化锚定 → `reviewed:false` 入库 → 社区审核翻 true。
 
-**生产管道**(复用 A 的同步/嵌入/检索资产):`label:bug 且有关联修复 PR` 入口过滤 → LLM 结构化抽取(「放弃」是合法输出)→ 双模型交叉验证 + 程序化锚定(版本/PR 字段从 diff/milestone 校验,不信 LLM 自由文本)→ `reviewed: false` 入库 → 社区 PR 审核翻 true。
+**版权纪律**(2026-09 核实 ToS 后定稿):卡片只取**思想/事实三要素**(症状/根因/修法,改写而非摘录),溯源链接即署名;截图只链接不搬运;申诉下架通道;仅公开仓库。
 
-**分发**:双通道——git clone 自建库(embedding 纯函数近似一致,环境哈希对账)/ CI 每次 merge 自动 schema 校验 + 按片重建索引 + 附 Release。
+**诚实预期**:全自动质量天花板 80-90 分;审核供给是 B 最大结构性风险——这也是 B 冻结的原因。
 
-**法律**:仓库 LICENSE 只授权自产内容;他人 issue 内容以摘要 + 结构化元数据 + 溯源链接呈现。
+## 6. 路线图(现状)
 
-**诚实预期**:全自动质量天花板 80-90 分;「AI 初稿 + 社区轻量审核」是冷启动唯一可行路径,审核供给是 B 最大的结构性风险——这也是 B 被冻结的原因。
-
-## 6. 路线图(两步法)
-
-**语言策略:Python 快速验证 → 思路确认后 Rust 重构为单二进制发布。** 分界线 = 「自用 → 分发给陌生人」:验证期只有自己用,Python 分发摩擦不存在;重构发生在发布动机最明确的时刻。重构成本被三个结构性事实压到接近零:核心管线 <1000 行(翻译不是再设计)、索引可重建(重跑 sync 即得,无数据迁移)、验证期真正产出语言无关(评测集/参数/query_log,Rust 直接继承)。
-
-| 阶段 | 内容 | 量级 |
-|---|---|---|
-| **Phase 0 脏版验证** | 手动导出 1 个活跃仓库 issue → 100 行脚本(bge-m3+BLOB+最简 MCP)→ Claude Code 接入,验证「检索质量体感」 | 1-2 天 |
-| **Phase 1 MVP(Python)** | 本文档第 3 节全部 | 1-2 周业余 |
-| **Phase 1.5 验收** | 第 4 节四条 + 评测集建立 | 1 周(并行自用) |
-| **Phase 2a Rust 重构** | **发布工程,仅当验收通过且出现发布需求**:按 §3.7 发布期栈翻译,单二进制 + GoReleaser | 1-2 周 |
-| **Phase 2b 功能扩展** | GitHub App + webhook 实时增量;base+delta 分发;图扩展检索(relations 白送数据);聚类主题视图;PR 语义校验;`[rerank]` 视验收决定 | 视 Phase 1.5 数据 |
-| **Phase 3** | B 启动:抽取管道(Python 脚本域)+ bugcards 仓库 + CI 索引分发 | 视外部验证 |
-
-### 6.1 两步法成立的第一天纪律
-
-| 纪律 | 防的失败模式 |
+| 阶段 | 状态 |
 |---|---|
-| 向量存 BLOB 列,不用 vec0 专属特性 | 语言锁死:Rust 读不了 sqlite-vec 私有格式 |
-| MCP 工具签名 Phase 0 冻结,重构期不许动 | 对外契约漂移,客户端感知切换 |
-| 评测集/检索参数(RRF k、截断长度、过滤规则)存独立配置文件 | 验证产出散落代码里,重构时丢失 |
-| 重构触发条件写死:验收通过 + 发布需求出现 | 过早重构(验证未完烧时间)或永不重构(烂尾成 Python 万年形态) |
+| Phase 0-1.5(Python 验证 + MVP + 验收基建) | ✅ 完成(2026-09,Python 已退役) |
+| M1 serve 对齐 / M2 建库 | ✅ 完成 |
+| M2.5 relations(fixes/closes 图) | ⏳ 下一个 |
+| M3 发布工程 | ✅ 部分(v0.1.0 多平台 Release + gh-rag-indexes 数据分发已运营;GoReleaser 不再需要) |
+| Phase 2b(webhook 实时/rerank 启用) | 视验收数据 |
+| Phase 3(B 启动) | 视外部验证 |
 
 ## 7. 风险登记册(浓缩四份评估)
 
-| 风险 | 等级 | 对策(已内置) |
+| 风险 | 等级 | 对策 |
 |---|---|---|
-| 官方功能挤压 | 高 | 锚定结构性层(2.3);不做与官方重叠的查重/晨报 |
-| 自用验证盲区 | 高 | kill criteria 前置;外部用户验证为 Phase 2 门槛 |
-| 单人维护负担 | 高 | 单引擎(SQLite)两项目复用;依赖 ≤5;功能面克制 |
-| 聚类质量无底洞 | 中 | MVP 不做聚类,Phase 2 才碰 |
-| B 信任两难(草稿可检索则污染,不可检索则空库) | 中 | 冻结 B;锚定字段程序化;reviewed 过滤 |
-| embedding 一致性 | 中 | 环境哈希进 manifest,指纹不符拒绝合并 |
-| 法律(他人内容授权) | 低 | B 只存摘要 + 溯源;A 纯私有索引无分发问题 |
+| 官方功能挤压 | 高 | 锚定结构性层(2.3);不做重叠功能 |
+| 自用验证盲区 | 高 | kill criteria 前置;report 数据裁决 |
+| 单人维护负担 | 高 | 单引擎复用;依赖 8 个;功能面克制 |
+| embedding 一致性 | 中 | 指纹含组装参数,不符拒绝;黄金对齐(默认栈) |
+| 法律(他人内容) | 低 | A 骨架分发零全文;B 卡片版权纪律(§5) |
 
-## 8. 附录:RAG 生态调研的采纳/拒绝清单
+## 8. 附录:采纳/拒绝清单
 
-**采纳**:RAGAS 评估(3.5)、reranker 默认插槽(3.5)、角色化模型配置(Embedder/Reranker 接口)、低足迹可选装(3.7)、示例驱动文档(Phase 1.5 后补)、存储窄接口(3.5)、双级检索思想(BM25=low-level / 向量=high-level 的查询路由显式化)。
+**采纳**:RAGAS 评估(待建)、reranker 默认插槽、存储窄接口、双级检索路由显式化。
+**拒绝**:LLM 知识图谱抽取、深度文档解析、chunking 策略、WebUI/工作流、LangChain 系框架。
 
-**拒绝**:LLM 知识图谱抽取(真图免费)、深度文档解析(issue 非 PDF)、chunking 策略(issue 天然自边界)、WebUI/工作流/多模态(消费端是 agent)、LangChain/LlamaIndex 依赖(管线五步,框架是负资产)。
+---
+
+### 文档简史
+
+- v1.0(2026-09-20):立项定稿,两步法(Python→Rust)
+- v1.1-v1.2:两步法路线 + CLI/MCP 契约冻结
+- v1.3(09-21):架构收敛——本地推理与 Python 退役,纯 Rust + 纯 API
+- v1.4-1.4.2(09-23):PR/评论/raw 层/qwen 切换;索引分发定稿(骨架+补全文);数据贡献机制
+- v1.5(09-23):外审修复(中文FTS/指纹参数/限流);默认 provider 定稿 siliconflow
+- **v2.0(09-23):本版——注记折叠为正文,ETag/断点承诺降级标注,技术事实全面对齐现行实现**
