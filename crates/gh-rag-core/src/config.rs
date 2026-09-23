@@ -113,6 +113,67 @@ pub fn repos() -> Result<Option<Vec<String>>> {
     Ok(t.repos.filter(|v| !v.is_empty()))
 }
 
+/// config.toml `[eval]` 段解析结果(回落已展开)。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvalConfig {
+    pub judge_model: String,
+    pub base_url: String,
+    pub api_key: String,
+    pub days: u32,
+    pub top_k: usize,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+struct EvalSection {
+    judge_model: Option<String>,
+    base_url: Option<String>,
+    api_key: Option<String>,
+    days: Option<u32>,
+    top_k: Option<usize>,
+}
+
+const DEFAULT_JUDGE_MODEL: &str = "qwen-flash";
+
+/// `[eval]` 段解析;base_url/api_key 缺省回落嵌入配置(含 GH_RAG_API_KEY 环境变量链)。
+pub fn eval_config() -> Result<EvalConfig> {
+    eval_config_with_home(gh_rag_home())
+}
+
+pub fn eval_config_with_home(home: std::path::PathBuf) -> Result<EvalConfig> {
+    let section: EvalSection = std::fs::read_to_string(home.join("config.toml"))
+        .ok()
+        .and_then(|raw| toml::from_str::<toml::Value>(&raw).ok())
+        .and_then(|v| v.get("eval").cloned())
+        .and_then(|s| s.try_into().ok())
+        .unwrap_or_default();
+    // 回落来源:嵌入解析结果(环境变量 > [embedding] > 预设)
+    let emb = resolve_with_home(home).unwrap_or_else(|_| ResolvedEmbedding {
+        base: String::new(),
+        key: String::new(),
+        model: String::new(),
+        dimensions: None,
+        batch_size: 16,
+    });
+    Ok(EvalConfig {
+        judge_model: section
+            .judge_model
+            .unwrap_or_else(|| DEFAULT_JUDGE_MODEL.to_string()),
+        base_url: section.base_url.unwrap_or(emb.base),
+        api_key: section
+            .api_key
+            .or_else(|| {
+                if emb.key.is_empty() {
+                    None
+                } else {
+                    Some(emb.key.clone())
+                }
+            })
+            .unwrap_or_default(),
+        days: section.days.unwrap_or(7),
+        top_k: section.top_k.unwrap_or(5),
+    })
+}
+
 /// 检索参数 [retrieval](vec_top/fts_top/rrf_k/top_k/snippet_chars;缺省与 SearchParams::default 一致)。
 pub fn search_params() -> Result<crate::retrieve::SearchParams> {
     #[derive(Default, serde::Deserialize)]
@@ -248,14 +309,60 @@ pub fn resolve_with_home(home: std::path::PathBuf) -> Result<ResolvedEmbedding> 
 mod tests {
     use super::*;
 
-    fn with_home(tag: &str, config: Option<&str>) -> Result<ResolvedEmbedding> {
+    fn home_with(tag: &str, config: Option<&str>) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("gh-rag-test-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         if let Some(c) = config {
             std::fs::write(dir.join("config.toml"), c).unwrap();
         }
-        resolve_with_home(dir)
+        dir
+    }
+
+    fn with_home(tag: &str, config: Option<&str>) -> Result<ResolvedEmbedding> {
+        resolve_with_home(home_with(tag, config))
+    }
+
+    #[test]
+    fn eval_section_defaults() {
+        let c = eval_config_with_home(home_with(
+            "eval-default",
+            Some("[embedding]\nbase_url = \"http://e:1/v1\"\napi_key = \"ek\"\n"),
+        ))
+        .unwrap();
+        assert_eq!(c.judge_model, "qwen-flash");
+        assert_eq!(c.days, 7);
+        assert_eq!(c.top_k, 5);
+        // 缺省回落 [embedding]
+        assert_eq!(c.base_url, "http://e:1/v1");
+        assert_eq!(c.api_key, "ek");
+    }
+
+    #[test]
+    fn eval_section_overrides() {
+        let c = eval_config_with_home(home_with(
+            "eval-override",
+            Some(
+                "[embedding]\nbase_url = \"http://e:1/v1\"\napi_key = \"ek\"\n\
+                 [eval]\njudge_model = \"qwen-plus\"\nbase_url = \"http://j:2/v1\"\n\
+                 api_key = \"jk\"\ndays = 30\ntop_k = 10\n",
+            ),
+        ))
+        .unwrap();
+        assert_eq!(c.judge_model, "qwen-plus");
+        assert_eq!(c.base_url, "http://j:2/v1");
+        assert_eq!(c.api_key, "jk");
+        assert_eq!(c.days, 30);
+        assert_eq!(c.top_k, 10);
+    }
+
+    #[test]
+    fn eval_missing_embedding_falls_back_to_empty_key() {
+        let c = eval_config_with_home(home_with("eval-noemb", None)).unwrap();
+        assert_eq!(c.judge_model, "qwen-flash");
+        assert_eq!(c.days, 7);
+        assert_eq!(c.top_k, 5);
+        assert!(c.api_key.is_empty(), "无任何来源时 key 为空,由调用方报错");
     }
 
     #[test]

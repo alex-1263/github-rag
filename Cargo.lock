@@ -476,6 +476,8 @@ dependencies = [
  "anyhow",
  "clap",
  "gh-rag-core",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

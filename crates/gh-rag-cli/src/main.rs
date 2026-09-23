@@ -45,6 +45,15 @@ enum Cmd {
         #[arg(long)]
         from: String,
     },
+    /// LLM 裁判检索评测:近 N 天真实查询 → top-k 逐条打分 → BeIR 指标报表
+    Eval {
+        /// 统计窗口天数(缺省读 [eval].days,再缺省 7)
+        #[arg(long)]
+        days: Option<u32>,
+        /// 锚定集 JSON 路径(漂移防护:不一致 > 20% 判 invalid)
+        #[arg(long)]
+        anchors: Option<String>,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -55,7 +64,104 @@ fn main() -> anyhow::Result<()> {
         Cmd::Status => status(),
         Cmd::Report { days } => report(days),
         Cmd::Sync { repo, all } => sync(repo, all),
+        Cmd::Eval { days, anchors } => eval(days, anchors.as_deref()),
     }
+}
+
+fn eval(days: Option<u32>, anchors_path: Option<&str>) -> anyhow::Result<()> {
+    use gh_rag_core::eval::{run_eval, Anchor, EvalParams, HttpJudge};
+
+    let store = gh_rag_core::store::IssueStore::new(&default_index_path()?)?;
+    // 评测需要两把 key:嵌入(查询向量化)+ 裁判(逐条打分)
+    let ecfg = gh_rag_core::config::eval_config().map_err(|e| anyhow::anyhow!("{e}"))?;
+    if ecfg.api_key.trim().is_empty() {
+        anyhow::bail!(
+            "裁判 api key 缺失:config.toml [eval].api_key(缺省回落 [embedding]/GH_RAG_API_KEY)"
+        );
+    }
+    let embedder = gh_rag_core::api_embedder::ApiEmbedder::from_env()?;
+    let judge = HttpJudge::new(&ecfg.base_url, &ecfg.api_key, &ecfg.judge_model);
+
+    let anchors: Vec<Anchor> = match anchors_path {
+        Some(p) => parse_anchors(&std::fs::read_to_string(p)?)?,
+        None => Vec::new(),
+    };
+
+    let params = EvalParams {
+        days: days.unwrap_or(ecfg.days),
+        top_k: ecfg.top_k,
+    };
+    let report = run_eval(&store, &embedder, &judge, params, &anchors)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    // 人读报表
+    println!(
+        "检索评测:{} 题真实查询 × top-{} | 裁判 {}(prompt {})",
+        report.per_query.len(),
+        params.top_k,
+        ecfg.judge_model,
+        &report.prompt_hash[..8]
+    );
+    println!(
+        "  ndcg@5 {:.3} | mrr {:.3} | hit@5 {:.3} | recall@5(池内) {:.3}",
+        report.scores.ndcg_at5, report.scores.mrr, report.scores.hit_at5, report.scores.recall_at5
+    );
+    if let Some(reason) = &report.invalid {
+        eprintln!("\n⚠ 锚定校准失效,报告不可信:{reason}\n");
+    }
+    println!("  抽样判例(人工 30 秒扫描):");
+    for s in &report.samples {
+        println!("    [{}] {}/#{} {}", s.grade, s.repo, s.number, s.title);
+    }
+
+    // JSON 落盘 ~/.gh-rag/eval-<date>.json
+    let out = gh_rag_core::config::gh_rag_home().join(format!("eval-{}.json", today_iso()));
+    std::fs::create_dir_all(gh_rag_core::config::gh_rag_home())?;
+    std::fs::write(&out, serde_json::to_string_pretty(&report)?)?;
+    println!("  报告已写入 {}", out.display());
+    if report.invalid.is_some() {
+        anyhow::bail!("评测报告 invalid(锚定漂移),详见上方警告");
+    }
+    Ok(())
+}
+
+/// 锚定集解析:裸数组,或带 `_说明`/`anchors` 字段的样例文档对象。
+fn parse_anchors(raw: &str) -> anyhow::Result<Vec<gh_rag_core::eval::Anchor>> {
+    #[derive(serde::Deserialize)]
+    struct Doc {
+        #[serde(default)]
+        anchors: Vec<gh_rag_core::eval::Anchor>,
+    }
+    if let Ok(v) = serde_json::from_str::<Vec<gh_rag_core::eval::Anchor>>(raw) {
+        return Ok(v);
+    }
+    serde_json::from_str::<Doc>(raw)
+        .map(|d| d.anchors)
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "锚定集 JSON 解析失败: {e}(格式见 tests/fixtures/eval_anchors.example.json)"
+            )
+        })
+}
+
+/// 本地日期 YYYY-MM-DD(无 chrono 依赖:天序日历数 → Y-M-D)。
+fn today_iso() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let days = secs.div_euclid(86_400);
+    // Howard Hinnant civil_from_days
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    format!("{:04}-{:02}-{:02}", if m <= 2 { y + 1 } else { y }, m, d)
 }
 
 fn status() -> anyhow::Result<()> {
@@ -246,7 +352,7 @@ fn sync_repos(repo: Option<String>, all: bool) -> anyhow::Result<Vec<String>> {
 
 #[cfg(test)]
 mod tests {
-    use super::sync_repos;
+    use super::{parse_anchors, sync_repos, today_iso};
 
     #[test]
     fn repo_and_all_conflict_is_error() {
@@ -257,5 +363,39 @@ mod tests {
     #[test]
     fn explicit_repo_without_all() {
         assert_eq!(sync_repos(Some("o/r".into()), false).unwrap(), vec!["o/r"]);
+    }
+
+    #[test]
+    fn anchors_bare_array_parses() {
+        let v =
+            parse_anchors(r#"[{"query":"q","repo":"o/r","number":1,"expected_grade":2}]"#).unwrap();
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].expected_grade, 2);
+    }
+
+    #[test]
+    fn anchors_example_doc_parses_and_ignores_comment_keys() {
+        let v = parse_anchors(
+            r#"{"_说明":"格式样例","_示例条目":{"query":"q"},"anchors":[{"query":"q","repo":"o/r","number":7,"expected_grade":0,"note":"n"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].number, 7);
+    }
+
+    #[test]
+    fn anchors_bad_json_rejected() {
+        assert!(parse_anchors("not json").is_err());
+    }
+
+    #[test]
+    fn today_iso_is_iso_date() {
+        let t = today_iso();
+        assert_eq!(t.len(), 10);
+        let b: Vec<&str> = t.split('-').collect();
+        assert_eq!(b.len(), 3);
+        assert!(b[0].parse::<i32>().unwrap() > 2020);
+        assert!((1..=12).contains(&b[1].parse::<u32>().unwrap()));
+        assert!((1..=31).contains(&b[2].parse::<u32>().unwrap()));
     }
 }
