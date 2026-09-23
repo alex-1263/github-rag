@@ -2,7 +2,7 @@
 
 GitHub issue/PR 的语义记忆层:跨仓库混合检索(向量 + BM25 + RRF),MCP 形态供 Claude Code / Copilot / OMP 等 agent 消费。设计文档见 [DESIGN.md](DESIGN.md)。
 
-**形态:纯 Rust 单二进制 + 纯 API 嵌入**。默认接入阿里云百炼 `qwen3.7-text-embedding-flash`(128K 上下文,¥0.125/M token;每月含 1M 免费额度),亦可一键切换硅基流动 / ollama / 任意 OpenAI 兼容端点。
+**形态:纯 Rust 单二进制 + 纯 API 嵌入**。默认接入阿里云百炼 `qwen3.7-text-embedding-flash`(128K 上下文,¥0.125/M token;新用户总额 1M token 免费额度,**非每月刷新**),亦可一键切换硅基流动 / ollama / 任意 OpenAI 兼容端点。
 
 ## 能力
 
