@@ -555,12 +555,7 @@ impl IssueStore {
         .unwrap_or_default();
         self.db.execute(
             "INSERT INTO query_log(tool, query, filters, results) VALUES (?, ?, ?, ?)",
-            rusqlite::params![
-                tool,
-                query,
-                filters.map(|f| f.to_string()),
-                results_json
-            ],
+            rusqlite::params![tool, query, filters.map(|f| f.to_string()), results_json],
         )?;
         Ok(())
     }
@@ -736,13 +731,12 @@ mod tests {
     }
 
     fn log_at(s: &IssueStore, tool: &str, query: &str, ts_expr: &str, follow_up: Option<&str>) {
-        s.db
-            .execute(
-                "INSERT INTO query_log(ts, tool, query, follow_up) \
+        s.db.execute(
+            "INSERT INTO query_log(ts, tool, query, follow_up) \
                  VALUES (datetime('now', ?1), ?2, ?3, ?4)",
-                rusqlite::params![ts_expr, tool, query, follow_up],
-            )
-            .unwrap();
+            rusqlite::params![ts_expr, tool, query, follow_up],
+        )
+        .unwrap();
     }
 
     #[test]
@@ -757,21 +751,21 @@ mod tests {
         let s = tmp_store("labesc");
         // 两条:label "100%bug" 与 "bug"(后者本不该被 %label% 命中……验证转义后互不串)
         for (id, labels) in [(1, r#"["100%bug"]"#), (2, r#"["axb"]"#), (3, r#"["a_b"]"#)] {
-            s.db
-                .execute(
-                    "INSERT INTO issues(id, repo, number, labels) VALUES (?1,'t/r',?1,?2)",
-                    rusqlite::params![id, labels],
-                )
-                .unwrap();
-            s.db
-                .execute(
-                    "INSERT INTO issues_vec(issue_id, embedding) VALUES (?1, x'00000000')",
-                    [id],
-                )
-                .unwrap();
+            s.db.execute(
+                "INSERT INTO issues(id, repo, number, labels) VALUES (?1,'t/r',?1,?2)",
+                rusqlite::params![id, labels],
+            )
+            .unwrap();
+            s.db.execute(
+                "INSERT INTO issues_vec(issue_id, embedding) VALUES (?1, x'00000000')",
+                [id],
+            )
+            .unwrap();
         }
         // 精确查 "a_b":不该命中 "axb"(旧实现 _ 作通配符会误命中)
-        let hit = s.candidates(None, None, Some(&["a_b".to_string()])).unwrap();
+        let hit = s
+            .candidates(None, None, Some(&["a_b".to_string()]))
+            .unwrap();
         assert_eq!(hit.len(), 1, "a_b 不得匹配 axb");
         assert_eq!(hit[0].0, 3);
         // 精确查 "100%bug":% 作通配符时仍能命中,但须只此一条
@@ -797,9 +791,8 @@ mod tests {
             &[("t/r".into(), 1)],
         )
         .unwrap();
-        let (f, r): (Option<String>, String) = s
-            .db
-            .query_row("SELECT filters, results FROM query_log", [], |r| {
+        let (f, r): (Option<String>, String) =
+            s.db.query_row("SELECT filters, results FROM query_log", [], |r| {
                 Ok((r.get(0)?, r.get(1)?))
             })
             .unwrap();
@@ -821,9 +814,8 @@ mod tests {
         s.log_query("search_issues", "new query", None, &[("t/x".into(), 9)])
             .unwrap();
         assert!(s.mark_follow_up("t/r", 7).unwrap(), "命中旧检索行");
-        let (qid, fu): (i64, Option<String>) = s
-            .db
-            .query_row(
+        let (qid, fu): (i64, Option<String>) =
+            s.db.query_row(
                 "SELECT id, follow_up FROM query_log WHERE follow_up IS NOT NULL",
                 [],
                 |r| Ok((r.get(0)?, r.get(1)?)),
@@ -860,4 +852,3 @@ mod tests {
         assert!(r0.top_queries.is_empty());
     }
 }
-

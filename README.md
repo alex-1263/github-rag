@@ -52,7 +52,7 @@ gh-rag sync --all          # 全量建库(issue + PR + 评论)
 #    search_issues / get_issue_context / find_related / list_repos
 ```
 
-日常维护只需要 `gh-rag sync --all`(增量秒级)。别人建好的索引可以直接装载(骨架库=向量+元数据,本地补全文):
+日常维护只需要 `gh-rag sync --all`(增量秒级)。人类侧可用 `gh-rag report --days 30` 看检索质量报表(query_log 统计:总量/去重/top10/follow_up 率/工具分布)、`gh-rag status` 看索引状态;注:人类直查的 `search` CLI 命令尚未提供(语义检索目前经 MCP 四工具消费)。别人建好的索引可以直接装载(骨架库=向量+元数据,本地补全文):
 
 ```bash
 gh-rag fetch --from <骨架库 URL 或本地路径>   # 指纹校验,不匹配拒绝(防向量空间混用)
@@ -89,7 +89,7 @@ api_key = "sk-..."
 
 ```bash
 cargo fmt --all && cargo clippy --all-targets -- -D warnings
-cargo test --workspace        # 33 个测试,零网络
+cargo test --workspace        # 57 个测试,零网络
 gh-rag doctor                 # 配置自检 + 端点探活
 ```
 

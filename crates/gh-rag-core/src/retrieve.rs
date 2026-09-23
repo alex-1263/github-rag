@@ -67,7 +67,12 @@ pub fn hybrid_search(
     let q = embedder.embed_query(query)?;
     let hits = hybrid_search_with_query(store, &q, query, filter, top_k, params)?;
     let log_entries: Vec<(String, i64)> = hits.iter().map(|h| (h.repo.clone(), h.number)).collect();
-    let _ = store.log_query("search_issues", query, Some(filters_json(filter)), &log_entries);
+    let _ = store.log_query(
+        "search_issues",
+        query,
+        Some(filters_json(filter)),
+        &log_entries,
+    );
     Ok(hits)
 }
 
