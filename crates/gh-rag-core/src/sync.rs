@@ -99,13 +99,19 @@ pub fn sync_repo(
     store.ensure_embedding_fp(&embedder.fingerprint())?;
 
     let cursor = store.sync_cursor(repo)?;
-    let fetched = github.iter_issues(repo, cursor.as_deref())?;
-    let comments = github.iter_comments(repo, cursor.as_deref())?;
-
-    // raw 层:合并落盘,读全量(带评论聚合)
+    // 流式断点(审查③):每页 API 数据到手即落 raw,中途崩溃已拉页不丢
     let raws = RawStore::open(raw_home, repo)?;
-    let raw_issues: Vec<RawIssue> = fetched.iter().map(to_raw).collect();
-    raws.merge(&raw_issues, &comments)?;
+    let mut fetched: Vec<IssueMeta> = Vec::new();
+    github.issues_pages(repo, cursor.as_deref(), &mut |page| {
+        let raw_page: Vec<RawIssue> = page.iter().map(to_raw).collect();
+        raws.merge(&raw_page, &[])?;
+        fetched.extend(page);
+        Ok(())
+    })?;
+    let comments = github.iter_comments(repo, cursor.as_deref())?;
+    raws.merge(&[], &comments)?;
+
+    // 读全量(带评论聚合)
     let all = raws.load(repo)?;
 
     // 受影响集:本批 issue ∪ 有新评论的 issue
