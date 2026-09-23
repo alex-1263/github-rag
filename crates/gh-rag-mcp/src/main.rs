@@ -209,7 +209,11 @@ impl ServerHandler for GhRag {
                     let _ = s.mark_follow_up(&repo, number);
                     let related =
                         find_related(s, &repo, number, 5, None).map_err(|e| e.to_string())?;
-                    let relations = s.relations_of(&repo, number).map_err(|e| e.to_string())?;
+                    let relations = relations_payload(
+                        &s.relations_of(&repo, number).map_err(|e| e.to_string())?,
+                        &s.relations_reverse(&repo, number)
+                            .map_err(|e| e.to_string())?,
+                    );
                     Ok(json!({
                         "repo": m.repo, "number": m.number, "title": m.title,
                         "state": m.state, "labels": m.labels,
@@ -362,4 +366,56 @@ fn with_store_arc<T>(
 ) -> std::result::Result<T, String> {
     let guard = store.lock().map_err(|_| "lock".to_string())?;
     f(&guard).map_err(|e| e.to_string())
+}
+
+/// M2.5:get_issue_context 的 relations 升级体。
+/// 正向 rows = relations_of,反向 rows = relations_reverse;fixes 的反向转义为 fixed_by。
+/// 分类键 fixes/closes/fixed_by/refs,空类返回空数组(非 null);每项 {repo, number}。
+fn relations_payload(
+    fwd: &[(String, String, i64)],
+    rev: &[(String, String, i64)],
+) -> serde_json::Value {
+    let items = |rows: &[(String, String, i64)], want: &str| {
+        json!(rows
+            .iter()
+            .filter(|(k, _, _)| k == want)
+            .map(|(_, r, n)| json!({"repo": r, "number": n}))
+            .collect::<Vec<_>>())
+    };
+    let mut v = serde_json::Map::new();
+    for k in ["fixes", "closes"] {
+        v.insert(k.into(), items(fwd, k));
+    }
+    // fixes 的反向 = fixed_by;refs 反向一般无人消费,不透出
+    v.insert(
+        "fixed_by".into(),
+        items(
+            &rev.iter()
+                .filter(|(k, _, _)| k == "fixes")
+                .cloned()
+                .collect::<Vec<_>>(),
+            "fixes",
+        ),
+    );
+    v.insert("refs".into(), items(fwd, "refs"));
+    json!(v)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn relations_payload_classifies_and_defaults_empty() {
+        let fwd = vec![
+            ("fixes".to_string(), "o/r".to_string(), 3),
+            ("refs".to_string(), "x/y".to_string(), 9),
+        ];
+        let rev = vec![("fixes".to_string(), "t/a".to_string(), 7)];
+        let v = relations_payload(&fwd, &rev);
+        assert_eq!(v["fixes"], json!([{"repo": "o/r", "number": 3}]));
+        assert_eq!(v["fixed_by"], json!([{"repo": "t/a", "number": 7}]));
+        assert_eq!(v["refs"], json!([{"repo": "x/y", "number": 9}]));
+        assert_eq!(v["closes"], json!([]), "空类为数组非 null");
+    }
 }
