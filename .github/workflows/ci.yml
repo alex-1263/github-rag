@@ -2,7 +2,7 @@ name: ci
 
 on:
   push:
-    branches: [main, rust-rewrite]
+    branches: [main, rust-rewrite, dev]
     paths:
       - "crates/**"
       - "tests/**"
