@@ -1,0 +1,45 @@
+name: release
+# 打 tag(v*)触发,多平台构建 gh-rag / gh-rag-mcp 双二进制并上传 Release assets
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: macos-13
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # rsproxy 镜像仅本地(中国网络)需要;runner 直连 crates.io 更快
+      - name: Drop local cargo mirror config
+        run: rm -f .cargo/config.toml
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # 构建两个二进制并上传 zip/tar.gz + sha256 到 tag 对应的 Release
+      - uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: gh-rag, gh-rag-mcp
+          target: ${{ matrix.target }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          archive: gh-rag-$tag-$target
+          zip: windows
+          tar: unix
+          checksum: sha256
