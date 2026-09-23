@@ -4,7 +4,7 @@
 
 ## 项目一句话
 
-GitHub issue 的语义记忆层:跨仓库混合检索(向量 + BM25 + RRF),CLI 与 MCP 双形态,供 AI agent 消费。设计全貌见 `DESIGN.md`。
+GitHub issue/PR 的语义记忆层:跨仓库混合检索(向量 + BM25 + RRF),CLI 与 MCP 双形态,供 AI agent 消费。设计全貌见 `DESIGN.md`。
 
 ## 分支模型(2026-09 架构收敛后)
 
@@ -13,10 +13,12 @@ GitHub issue 的语义记忆层:跨仓库混合检索(向量 + BM25 + RRF),CLI �
 
 ## 里程碑(顺序执行,不许跳)
 
-1. ~~M1 serve-only 对齐~~ **已完成**(2026-09):Rust 读库 + 混合检索逐条对齐 Python;API 黄金对齐 0.99993
-2. **M2 sync 建库**:Rust 端建库 + 增量(嵌入走 API,含限流节流/429 退避)——**Python 退役后这是唯一建库路径,最高优先**
-3. **M3 发布工程**:GoReleaser 多平台产物;索引分发走 Release asset(摘要+溯源,全文再分发踩版权线)
-4. M4+(远期,先不做):web 查看端(axum 薄壳,复用 core)
+1. ~~M1 serve-only 对齐~~ **已完成**(2026-09):Rust 读库 + 混合检索逐条对齐 Python
+2. ~~M2 sync 建库~~ **已完成**(2026-09):Rust 全量/增量建库;raw 原始层(gzip)+ 评论全链路 +
+   PR 入库(kind);qwen3.7-flash 为当前默认嵌入(百炼)
+3. **M2.5 relations 落地**:PR 的 fixes/closes 提及 → relations 表;get_issue_context 返回关联图
+4. **M3 发布工程**:GoReleaser 多平台产物;索引分发走 Release asset(摘要+溯源,全文再分发踩版权线)
+5. M4+(远期,先不做):web 查看端(axum 薄壳,复用 core)
 
 ## TDD 硬纪律(违反 = 改动无效)
 
@@ -31,9 +33,8 @@ GitHub issue 的语义记忆层:跨仓库混合检索(向量 + BM25 + RRF),CLI �
 | 层 | 位置 | 测什么 | 依赖 |
 |---|---|---|---|
 | 单元 | 同文件 `#[cfg(test)]` | 纯逻辑(RRF 融合、文本组装、引用解析、游标推进) | 无 IO |
-| 集成 | `crates/gh-rag-core/tests/*.rs`(一行为一文件) | 公共 API 行为:建库→检索→过滤→增量 | 临时目录 + 假 embedder |
-| 契约 | `crates/gh-rag-mcp/tests/` | 四个 MCP 工具的输入输出形状 | 假 core |
-| **黄金对齐** | `crates/gh-rag-core/tests/api_golden.rs` | ApiEmbedder(或任意端点)vs 冻结 fixtures 余弦 > 0.999 | 在线 API(本地带 key 跑;ollama 端点走手动 workflow) |
+| 集成 | `crates/gh-rag-core/tests/*.rs`(一行为一文件) | search(检索质量/过滤/query_log)、sync_build(建库→增量→评论驱动→raw 重建) | 临时目录 + 假 embedder/假 API |
+| **黄金对齐** | `crates/gh-rag-core/tests/api_golden.rs` | ApiEmbedder(或任意端点)vs 冻结 fixtures 余弦 > 0.999 | 在线 API(fixtures 为 bge-m3 空间;qwen 空间的基准待生成) |
 | 快照 | 集成测试内 `insta` | 检索输出格式(排序、字段、截断) | 假 embedder |
 
 测试纪律:假 embedder 返回确定性向量(如内容 hash 派生),保证测试可重复;需要真实模型的只有黄金层。
@@ -43,10 +44,17 @@ GitHub issue 的语义记忆层:跨仓库混合检索(向量 + BM25 + RRF),CLI �
 ```
 crates/
   gh-rag-core/    # 全部领域逻辑。bin 之外唯一允许被依赖的 crate
-  gh-rag-cli/     # bin:clap 解析 → core。不许有业务逻辑
-  gh-rag-mcp/     # bin:rmcp 工具注册 → core。不许有业务逻辑
+    config.rs     # provider 预设/维度/批量/节流配置解析
+    github.rs     # GithubApi trait + cursor 分页 HTTP 实现(issue/PR + 仓库级评论)
+    raw.rs        # raw 原始层(JSONL gzip):重建索引零 API 的数据底座
+    sync.rs       # 编排:拉取→raw→hash 增量判定(含评论)→批量嵌入→upsert
+    api_embedder.rs / embedder.rs / retrieve.rs / store.rs
+  gh-rag-cli/     # bin:clap → core(sync/status/doctor)
+  gh-rag-mcp/     # bin:rmcp 工具注册 → core
   gh-rag-web/     # (M4)axum → core
 ```
+
+数据分层纪律:**GitHub API → raw 层(唯一拉取点)→ 索引**。任何索引重建只许从 raw 走,禁止绕过 raw 直连 API 建库。
 
 - **依赖方向单向**:cli/mcp/web → core。core 不依赖任何 bin。
 - **core 的 IO 全部 trait 化**:`Embedder`(embed_texts/embed_query/fingerprint)、`IssueStore`(upsert/candidates/fts/meta)、`GithubApi`(iter_issues)。core 内禁止直接 `reqwest`/模型加载——具体实现放在 core 的 `infra` 模块,通过构造函数注入。
@@ -60,6 +68,10 @@ crates/
 cargo fmt --all && cargo clippy --all-targets -- -D warnings
 cargo test --workspace            # 单元 + 集成(黄金层需在线,不含在内)
 cargo run --bin gh-rag-mcp        # MCP serve(stdio)
+
+# CLI(bin gh-rag)
+gh-rag sync <repo> | --all        # 全量/增量同步;清 sync_state 后跑 = 全量重建
+gh-rag status / doctor
 
 # API 黄金对齐(需在线 + key)
 GH_RAG_API_KEY=xxx cargo test -p gh-rag-core --features golden -- --nocapture
