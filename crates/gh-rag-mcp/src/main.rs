@@ -24,6 +24,33 @@ struct GhRag {
     /// 懒初始化:启动不要求 GH_RAG_API_KEY,首次嵌入调用才构造;
     /// 构造失败只报该次工具错误,进程不退出(list_repos / get_issue_context 无需 key)。
     embedder: Arc<std::sync::Mutex<Option<ApiEmbedder>>>,
+    /// 启动时指纹防线:索引 embedding_fp 的向量空间(model|dim|len)与当前 config 期望
+    /// 不一致时的告警文案;search_issues 直接报错提示重建(其余工具照常)。
+    space_error: Option<String>,
+}
+
+/// 当前 config 期望的向量空间(与 ApiEmbedder::fingerprint 同一构造:model[dim]|len)。
+fn expected_space() -> Option<(String, String)> {
+    let cfg = gh_rag_core::config::resolve().ok()?;
+    let model = match cfg.dimensions {
+        Some(d) => format!("{}[dim={}]", cfg.model, d),
+        None => cfg.model.clone(),
+    };
+    Some(gh_rag_core::store::fingerprint_space(&format!(
+        "{model}|api|len=512"
+    )))
+}
+
+/// 启动指纹防线:不匹配返回告警文案(仅 model/dim 空间比对,宽松于 sync 侧 full 指纹)。
+fn space_warning(store: &IssueStore) -> Option<String> {
+    let db_fp = store.manifest_get("embedding_fp").ok()??;
+    let expected = expected_space()?;
+    if gh_rag_core::store::fingerprint_space(&db_fp) != expected {
+        return Some(format!(
+            "嵌入空间不匹配:索引按 [{db_fp}] 构建,当前配置期望 {expected:?} — 检索结果不可信,请重建索引(gh-rag sync)"
+        ));
+    }
+    None
 }
 
 fn gh_rag_home() -> std::path::PathBuf {
@@ -137,6 +164,10 @@ impl ServerHandler for GhRag {
                     labels: opt_str_vec(&args, "labels"),
                 };
                 let top_k = args.get("top_k").and_then(|v| v.as_i64()).unwrap_or(5) as usize;
+                // 指纹防线:索引空间与当前配置不符 → 不做检索,提示重建
+                if let Some(w) = &self.space_error {
+                    return tool_err(w);
+                }
                 // 嵌入先行(网络调用不持库锁),入库后取锁做召回
                 let res = self.embed_query(&query).and_then(|q| {
                     with_store(&store, |s| {
@@ -257,6 +288,11 @@ fn bad_request(msg: &str) -> Result<CallToolResponse, McpError> {
     Err(McpError::invalid_params(msg.to_string(), None))
 }
 
+/// 工具层错误文本(不 crash 进程,调用方可见)。
+fn tool_err(msg: &str) -> Result<CallToolResponse, McpError> {
+    Ok(rmcp::model::CallToolResult::error(vec![ContentBlock::text(msg.to_string())]).into())
+}
+
 fn tool_def(name: &str, desc: &str, schema: serde_json::Value) -> Tool {
     let schema_map = schema.as_object().cloned().unwrap_or_default();
     Tool::new(
@@ -289,6 +325,15 @@ fn opt_str_vec(
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let store = std::sync::Mutex::new(IssueStore::new(&gh_rag_home().join("index.sqlite"))?);
+    // 启动指纹防线(读路径):manifest embedding_fp 与当前 config 期望空间不一致 → 醒目警告
+    let space_error = with_store_arc(&store, |s| Ok::<_, gh_rag_core::Error>(space_warning(s)))
+        .unwrap_or_else(|e| {
+            eprintln!("[gh-rag-lite] 指纹防线检查失败:{e}");
+            None
+        });
+    if let Some(w) = &space_error {
+        log(&format!("⚠ {w}"));
+    }
     log("mode: api-only (默认 siliconflow bge-m3) — 嵌入懒初始化:无 GH_RAG_API_KEY 也能起,list_repos 可用;首次语义检索时才需要 key");
     log(&format!(
         "index ready ({} repos)",
@@ -297,6 +342,7 @@ async fn main() -> anyhow::Result<()> {
     let server = GhRag {
         store: Arc::new(store),
         embedder: Arc::new(std::sync::Mutex::new(None)),
+        space_error,
     };
     let service = server
         .serve(rmcp::transport::io::stdio())

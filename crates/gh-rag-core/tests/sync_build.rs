@@ -160,7 +160,7 @@ fn full_build_then_searchable_then_idempotent() {
     assert_eq!(emb.count.get(), 2);
 
     // 检索可见:FTS 命中
-    let fts = store.fts_search("postgres", None, None, 5).unwrap();
+    let fts = store.fts_search("postgres", None, None, None, 5).unwrap();
     assert!(!fts.is_empty(), "FTS 应命中 postgres");
     let m = store.get_issue("t/a", 1).unwrap().unwrap();
     assert_eq!(m.title, "postgres 连接失败");
@@ -208,7 +208,7 @@ fn hash_change_triggers_reembed_of_one() {
         .unwrap();
     assert_eq!(n, 2, "行数不膨胀(id 稳定)");
     assert!(!store
-        .fts_search("标题甲(改)", None, None, 5)
+        .fts_search("标题甲(改)", None, None, None, 5)
         .unwrap()
         .is_empty());
 }
