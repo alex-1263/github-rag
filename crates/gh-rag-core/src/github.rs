@@ -209,10 +209,21 @@ impl HttpGithubApi {
                             std::thread::sleep(wait);
                         }
                     }
-                    let body = r.into_string().map_err(|e| {
-                        Error::Io(std::io::Error::other(format!("github body: {e}")))
-                    })?;
-                    return Ok((body, next));
+                    // 读体失败(连接成但流被掐)同样退避重试——整个 Ok 分支重来
+                    match r.into_string() {
+                        Ok(body) => return Ok((body, next)),
+                        Err(e) if attempt <= 3 => {
+                            let secs = 2u64 << (attempt - 1);
+                            eprintln!("[gh-rag] 读体中断,{secs}s 后重试(第 {attempt} 次): {e}");
+                            std::thread::sleep(std::time::Duration::from_secs(secs));
+                            continue;
+                        }
+                        Err(e) => {
+                            return Err(Error::Io(std::io::Error::other(format!(
+                                "github body: {e}"
+                            ))))
+                        }
+                    }
                 }
                 Err(ureq::Error::Status(403, r)) | Err(ureq::Error::Status(429, r)) => {
                     let retry_after = r.header("Retry-After").and_then(parse_retry_after);
