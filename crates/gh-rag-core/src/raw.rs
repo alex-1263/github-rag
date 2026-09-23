@@ -181,13 +181,18 @@ impl RawStore {
 }
 
 /// gzip 全量写(JSONL 冷数据,压缩存储是默认)。
+/// 原子落盘:先写同目录 .tmp 再 rename——进程被杀/崩溃在写中途不会把存量数据截断为零。
 fn write_gzip(path: &std::path::Path, text: &str) -> std::io::Result<()> {
     use flate2::write::GzEncoder;
     use flate2::Compression;
-    let f = std::fs::File::create(path)?;
-    let mut enc = GzEncoder::new(f, Compression::default());
-    enc.write_all(text.as_bytes())?;
-    enc.finish()?;
+    let tmp = path.with_extension("tmp");
+    {
+        let f = std::fs::File::create(&tmp)?;
+        let mut enc = GzEncoder::new(f, Compression::default());
+        enc.write_all(text.as_bytes())?;
+        enc.finish()?;
+    }
+    std::fs::rename(&tmp, path)?;
     Ok(())
 }
 
