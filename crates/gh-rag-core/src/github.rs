@@ -146,7 +146,11 @@ pub struct HttpGithubApi {
 impl HttpGithubApi {
     pub fn from_token(token: String) -> Self {
         // 中国网络直连 api.github.com 长拉取易被掐:支持 HTTPS_PROXY/ALL_PROXY(与 skeleton 下载同款)
-        let mut builder = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(30));
+        // timeout_read 单独设:socks 半开挂起时整体 timeout 不一定触发,读超时硬保障
+        let mut builder = ureq::AgentBuilder::new()
+            .timeout(std::time::Duration::from_secs(60))
+            .timeout_connect(std::time::Duration::from_secs(15))
+            .timeout_read(std::time::Duration::from_secs(30));
         if let Some(u) = crate::skeleton::proxy_url_from_env(
             std::env::var("HTTPS_PROXY").ok().as_deref(),
             std::env::var("ALL_PROXY").ok().as_deref(),
