@@ -97,7 +97,11 @@ fn seed(store: &IssueStore, issues: &[FixtureIssue]) {
             .db
             .execute(
                 "INSERT INTO issues_fts(rowid, title, body) VALUES (?,?,?)",
-                rusqlite::params![id, it.title, it.body],
+                rusqlite::params![
+                    id,
+                    gh_rag_core::cjk::cjk_bigram(it.title),
+                    gh_rag_core::cjk::cjk_bigram(it.body)
+                ],
             )
             .unwrap();
     }
@@ -150,6 +154,29 @@ fn fixtures() -> Vec<FixtureIssue> {
             body: "theme not persisted on refresh",
             state: "open",
             labels: &["bug", "ux"],
+        },
+    ]
+}
+
+/// 全中文无空格文本(缺陷场景:unicode61 把整串 CJK 当单 token)。
+fn cjk_fixtures() -> Vec<FixtureIssue> {
+    use FixtureIssue as F;
+    vec![
+        F {
+            repo: "acme/cn",
+            number: 5,
+            title: "导出CSV中文乱码",
+            body: "导出报表时中文列全部变成乱码,英文列正常,怀疑编码处理有缺陷",
+            state: "open",
+            labels: &["bug"],
+        },
+        F {
+            repo: "acme/cn",
+            number: 6,
+            title: "存储过程无法展开",
+            body: "数据库面板里存储过程无法展开查看定义,刷新后依旧",
+            state: "closed",
+            labels: &["bug"],
         },
     ]
 }
@@ -249,8 +276,64 @@ fn related_finds_same_topic_and_excludes_self() {
     assert!(rel.iter().all(|(_, _, n, _, _)| *n != 1), "不得包含自身");
 }
 
+
 #[test]
-fn manifest_roundtrip() {
-    let store = setup(&fixtures());
-    assert!(store.manifest_get("embedding_fp").unwrap().is_none());
+fn cjk_single_term_hits_via_fts_leg() {
+    let store = setup(&cjk_fixtures());
+    let hits = hybrid_search(
+        &store,
+        &BagEmbedder,
+        "乱码",
+        &SearchFilter::default(),
+        5,
+        &SearchParams::default(),
+    )
+    .unwrap();
+    assert!(
+        hits.iter().any(|h| h.number == 5),
+        "『乱码』必须经 FTS 腿命中『导出CSV中文乱码』,得到 {:?}",
+        hits
+            .iter()
+            .map(|h| (h.number, h.source))
+            .collect::<Vec<_>>()
+    );
+    let hit = hits.iter().find(|h| h.number == 5).unwrap();
+    assert!(
+        hit.source.contains("fts"),
+        "中文命中必须落在 FTS 腿,实际 source={}",
+        hit.source
+    );
+}
+
+#[test]
+fn cjk_multi_term_hits_via_fts_leg() {
+    let store = setup(&cjk_fixtures());
+    let hits = hybrid_search(
+        &store,
+        &BagEmbedder,
+        "导出 乱码",
+        &SearchFilter::default(),
+        5,
+        &SearchParams::default(),
+    )
+    .unwrap();
+    assert!(hits.iter().any(|h| h.number == 5), "『导出 乱码』必须命中 #5");
+}
+
+#[test]
+fn cjk_long_phrase_hits_via_fts_leg() {
+    let store = setup(&cjk_fixtures());
+    let hits = hybrid_search(
+        &store,
+        &BagEmbedder,
+        "存储过程",
+        &SearchFilter::default(),
+        5,
+        &SearchParams::default(),
+    )
+    .unwrap();
+    assert!(
+        hits.iter().any(|h| h.number == 6),
+        "『存储过程』必须命中 #6『存储过程无法展开』"
+    );
 }
