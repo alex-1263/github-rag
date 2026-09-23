@@ -1,13 +1,14 @@
 //! gh-rag MCP server —— LITE(API-only)。
 //!
 //! 无本地推理引擎:嵌入全部走 OpenAI 兼容 API(默认硅基流动,免费 bge-m3)。
-//! 体积 ~8MB,零模型下载,零冷启动加载。需环境变量 GH_RAG_API_KEY。
+//! 体积 ~8MB,零模型下载,零冷启动加载。嵌入懒初始化:无 GH_RAG_API_KEY 也能启动,
+//! 首次语义检索时才构造(失败报该次工具错误,不退出进程)。
 //! 工具签名与完整版完全一致(DESIGN §3.8)。
 
 use std::sync::Arc;
 
 use gh_rag_core::api_embedder::ApiEmbedder;
-use gh_rag_core::retrieve::{find_related, hybrid_search, SearchFilter, SearchParams};
+use gh_rag_core::retrieve::{find_related, hybrid_search_with_query, SearchFilter, SearchParams};
 use gh_rag_core::store::IssueStore;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, ContentBlock, ListToolsResult, ServerCapabilities,
@@ -20,7 +21,9 @@ use serde_json::json;
 #[derive(Clone)]
 struct GhRag {
     store: Arc<std::sync::Mutex<IssueStore>>,
-    embedder: Arc<ApiEmbedder>,
+    /// 懒初始化:启动不要求 GH_RAG_API_KEY,首次嵌入调用才构造;
+    /// 构造失败只报该次工具错误,进程不退出(list_repos / get_issue_context 无需 key)。
+    embedder: Arc<std::sync::Mutex<Option<ApiEmbedder>>>,
 }
 
 fn gh_rag_home() -> std::path::PathBuf {
@@ -39,6 +42,27 @@ fn gh_rag_home() -> std::path::PathBuf {
 
 fn log(msg: &str) {
     eprintln!("[gh-rag-lite] {msg}");
+}
+
+impl GhRag {
+    /// 懒构造 embedder(首次调用才读配置/校验 key)并执行 embed_query。
+    /// 网络调用不持库锁——调用方拿到向量后再进 with_store。
+    fn embed_query(&self, query: &str) -> std::result::Result<Vec<f32>, String> {
+        use gh_rag_core::embedder::Embedder as _;
+        let mut slot = self
+            .embedder
+            .lock()
+            .map_err(|_| "embedder lock poisoned".to_string())?;
+        if slot.is_none() {
+            *slot = Some(ApiEmbedder::from_env().map_err(|e| {
+                format!("嵌入端点不可用:{e}(search_issues/find_related 语义腿需要;list_repos/get_issue_context 不需要)")
+            })?);
+        }
+        slot.as_ref()
+            .expect("slot just filled")
+            .embed_query(query)
+            .map_err(|e| e.to_string())
+    }
 }
 
 impl ServerHandler for GhRag {
@@ -102,7 +126,6 @@ impl ServerHandler for GhRag {
         let name = request.name.as_ref();
         let args = request.arguments.unwrap_or_default();
         let store = self.store.clone();
-        let embedder = self.embedder.clone();
         let res: std::result::Result<serde_json::Value, String> = match name {
             "search_issues" => {
                 let Some(query) = str_arg(&args, "query") else {
@@ -114,18 +137,21 @@ impl ServerHandler for GhRag {
                     labels: opt_str_vec(&args, "labels"),
                 };
                 let top_k = args.get("top_k").and_then(|v| v.as_i64()).unwrap_or(5) as usize;
-                with_store(&store, |s| {
-                    hybrid_search(
-                        s,
-                        embedder.as_ref(),
-                        &query,
-                        &filter,
-                        top_k,
-                        &SearchParams::default(),
-                    )
-                    .map_err(|e| e.to_string())
-                })
-                .map(|hits| {
+                // 嵌入先行(网络调用不持库锁),入库后取锁做召回
+                let res = self.embed_query(&query).and_then(|q| {
+                    with_store(&store, |s| {
+                        hybrid_search_with_query(
+                            s,
+                            &q,
+                            &query,
+                            &filter,
+                            top_k,
+                            &SearchParams::default(),
+                        )
+                        .map_err(|e| e.to_string())
+                    })
+                });
+                res.map(|hits| {
                     json!(hits
                         .iter()
                         .map(|h| json!({
@@ -148,7 +174,7 @@ impl ServerHandler for GhRag {
                         .get_issue(&repo, number)
                         .map_err(|e| e.to_string())?
                         .ok_or_else(|| format!("{repo}#{number} not indexed"))?;
-                    let _ = s.mark_follow_up(&format!("{repo}#{number}"));
+                    let _ = s.mark_follow_up(&repo, number);
                     let related =
                         find_related(s, &repo, number, 5, None).map_err(|e| e.to_string())?;
                     let relations = s.relations_of(&repo, number).map_err(|e| e.to_string())?;
@@ -261,16 +287,15 @@ fn opt_str_vec(
 }
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let embedder = ApiEmbedder::from_env()?;
     let store = std::sync::Mutex::new(IssueStore::new(&gh_rag_home().join("index.sqlite"))?);
-    log("mode: api-only (siliconflow bge-m3, free) — no local model required");
+    log("mode: api-only (默认 siliconflow bge-m3) — 嵌入懒初始化:无 GH_RAG_API_KEY 也能起,list_repos 可用;首次语义检索时才需要 key");
     log(&format!(
         "index ready ({} repos)",
         with_store_arc(&store, |s| s.repo_stats().map(|v| v.len())).unwrap_or(0)
     ));
     let server = GhRag {
         store: Arc::new(store),
-        embedder: Arc::new(embedder),
+        embedder: Arc::new(std::sync::Mutex::new(None)),
     };
     let service = server
         .serve(rmcp::transport::io::stdio())

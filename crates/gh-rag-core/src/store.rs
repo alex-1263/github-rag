@@ -27,6 +27,8 @@ pub struct IssueMeta {
     pub comments_count: i64,
     /// 评论内容(时间序);None = 从未拉取(存量兼容),Some = 已聚合
     pub comments: Option<Vec<crate::github::Comment>>,
+    pub author: String,
+    pub created_at: String,
     pub updated_at: String,
 }
 
@@ -132,8 +134,9 @@ impl IssueStore {
         }
         if let Some(labels) = labels {
             for lab in labels {
-                sql.push_str(" AND i.labels LIKE ?");
-                args.push(Box::new(format!("%\"{lab}\"%")));
+                // ESCAPE 转义 %/_/\:labels 含特殊字符(如 "c++100%")不再误匹配
+                sql.push_str(" AND i.labels LIKE ? ESCAPE '\\'");
+                args.push(Box::new(format!("%\"{}\"%", escape_like(lab))));
             }
         }
         let refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(|b| b.as_ref()).collect();
@@ -205,7 +208,8 @@ impl IssueStore {
         }
         let ph = (0..ids.len()).map(|_| "?").collect::<Vec<_>>().join(",");
         let sql = format!(
-            "SELECT id, repo, number, title, body, state, labels, comments_count, updated_at, kind \
+            "SELECT id, repo, number, title, body, state, labels, comments_count, updated_at, kind, \
+             COALESCE(author, ''), COALESCE(created_at, '') \
              FROM issues WHERE id IN ({ph})"
         );
         let mut stmt = self.db.prepare(&sql)?;
@@ -225,6 +229,8 @@ impl IssueStore {
                     labels: parse_labels(r.get(6)?),
                     comments_count: r.get(7)?,
                     updated_at: r.get(8)?,
+                    author: r.get(10)?,
+                    created_at: r.get(11)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -249,7 +255,8 @@ impl IssueStore {
 
     pub fn get_issue(&self, repo: &str, number: i64) -> Result<Option<IssueMeta>> {
         let mut stmt = self.db.prepare(
-            "SELECT id, repo, number, title, body, state, labels, comments_count, updated_at, kind \
+            "SELECT id, repo, number, title, body, state, labels, comments_count, updated_at, kind, \
+             COALESCE(author, ''), COALESCE(created_at, '') \
              FROM issues WHERE repo = ? AND number = ?",
         )?;
         let mut rows = stmt.query_map([repo, &number.to_string()], map_meta)?;
@@ -387,11 +394,12 @@ impl IssueStore {
             let mut sel =
                 tx.prepare("SELECT id,title,body FROM issues WHERE repo=?1 AND number=?2")?;
             let mut ins = tx.prepare(
-                "INSERT INTO issues(id,repo,kind,number,title,body,state,labels,comments_count,updated_at,embedded_hash)
-                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
+                "INSERT INTO issues(id,repo,kind,number,title,body,state,labels,comments_count,author,created_at,updated_at,embedded_hash)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)
                  ON CONFLICT(repo,number) DO UPDATE SET
                    kind=excluded.kind, title=excluded.title, body=excluded.body, state=excluded.state,
                    labels=excluded.labels, comments_count=excluded.comments_count,
+                   author=excluded.author, created_at=excluded.created_at,
                    updated_at=excluded.updated_at, embedded_hash=excluded.embedded_hash")?;
             let mut fts_ins =
                 tx.prepare("INSERT INTO issues_fts(rowid,title,body) VALUES(?1,?2,?3)")?;
@@ -431,6 +439,8 @@ impl IssueStore {
                     it.meta.state,
                     labels,
                     it.meta.comments_count,
+                    it.meta.author,
+                    it.meta.created_at,
                     it.meta.updated_at,
                     it.text_hash,
                 ])?;
@@ -466,13 +476,16 @@ impl IssueStore {
         let labels = serde_json::to_string(&m.labels).unwrap_or_else(|_| "[]".to_string());
         self.db.execute(
             "UPDATE issues SET title=?1, body=?2, state=?3, labels=?4,
-                comments_count=?5, updated_at=?6 WHERE repo=?7 AND number=?8",
+                comments_count=?5, author=?6, created_at=?7, updated_at=?8
+                WHERE repo=?9 AND number=?10",
             rusqlite::params![
                 m.title,
                 m.body,
                 m.state,
                 labels,
                 m.comments_count,
+                m.author,
+                m.created_at,
                 m.updated_at,
                 m.repo,
                 m.number
@@ -526,7 +539,13 @@ impl IssueStore {
     }
     // -- query_log(检索质量飞轮的落地) -----------------------------------
 
-    pub fn log_query(&self, tool: &str, query: &str, results: &[(String, i64)]) -> Result<()> {
+    pub fn log_query(
+        &self,
+        tool: &str,
+        query: &str,
+        filters: Option<serde_json::Value>,
+        results: &[(String, i64)],
+    ) -> Result<()> {
         let results_json = serde_json::to_string(
             &results
                 .iter()
@@ -535,19 +554,88 @@ impl IssueStore {
         )
         .unwrap_or_default();
         self.db.execute(
-            "INSERT INTO query_log(tool, query, results) VALUES (?, ?, ?)",
-            rusqlite::params![tool, query, results_json],
+            "INSERT INTO query_log(tool, query, filters, results) VALUES (?, ?, ?, ?)",
+            rusqlite::params![tool, query, filters.map(|f| f.to_string()), results_json],
         )?;
         Ok(())
     }
 
-    pub fn mark_follow_up(&self, _ref: &str) -> Result<()> {
-        self.db.execute(
-            "UPDATE query_log SET follow_up = ? WHERE id = \
-             (SELECT id FROM query_log WHERE tool = 'search_issues' ORDER BY id DESC LIMIT 1)",
-            rusqlite::params![_ref],
+    /// 标记 follow_up:目标已知(repo+number),落在**结果里包含该目标**的最近一次检索上;
+    /// 没有任何检索结果包含该目标时不动任何行(返回 false)。
+    pub fn mark_follow_up(&self, repo: &str, number: i64) -> Result<bool> {
+        let target = format!("{repo}#{number}");
+        let n = self.db.execute(
+            "UPDATE query_log SET follow_up = ?2 WHERE id = \
+             (SELECT id FROM query_log WHERE tool = 'search_issues' AND results LIKE ?1 \
+              ORDER BY id DESC LIMIT 1)",
+            rusqlite::params![format!("%{target}%"), target],
         )?;
-        Ok(())
+        Ok(n > 0)
+    }
+}
+
+/// `gh-rag report` 的统计结果(只读,近 N 天)。
+#[derive(Debug, Default, PartialEq)]
+pub struct QueryReport {
+    pub days: u32,
+    /// 查询总次数
+    pub total: i64,
+    /// 去重后的不同查询数
+    pub unique: i64,
+    /// follow_up 标记数 / 查询总次数(total=0 时为 0.0)
+    pub follow_up_rate: f64,
+    /// 高频查询 top 10:(query, 次数),次数降序
+    pub top_queries: Vec<(String, i64)>,
+    /// 按工具分布:(tool, 次数),次数降序
+    pub by_tool: Vec<(String, i64)>,
+}
+
+impl IssueStore {
+    /// 质量报表:近 `days` 天的 query_log 统计。只读,不动任何写入路径。
+    pub fn query_report(&self, days: u32) -> Result<QueryReport> {
+        let since = format!("datetime('now', '-{days} days')");
+        let one = |sql: &str| -> Result<i64> {
+            self.db
+                .query_row(sql, [], |r| r.get(0))
+                .map_err(|e| crate::Error::Io(std::io::Error::other(e.to_string())))
+        };
+        let total = one(&format!(
+            "SELECT COUNT(*) FROM query_log WHERE ts >= {since}"
+        ))?;
+        let unique = one(&format!(
+            "SELECT COUNT(DISTINCT query) FROM query_log WHERE ts >= {since}"
+        ))?;
+        let followed = one(&format!(
+            "SELECT COUNT(*) FROM query_log WHERE ts >= {since} AND follow_up IS NOT NULL"
+        ))?;
+        let top_queries = self
+            .db
+            .prepare(&format!(
+                "SELECT query, COUNT(*) c FROM query_log WHERE ts >= {since} \
+                 GROUP BY query ORDER BY c DESC, query LIMIT 10"
+            ))?
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let by_tool = self
+            .db
+            .prepare(&format!(
+                "SELECT COALESCE(tool, '-'), COUNT(*) c FROM query_log WHERE ts >= {since} \
+                 GROUP BY tool ORDER BY c DESC"
+            ))?
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(QueryReport {
+            days,
+            total,
+            unique,
+            follow_up_rate: if total > 0 {
+                followed as f64 / total as f64
+            } else {
+                0.0
+            },
+            top_queries,
+            by_tool,
+        })
     }
 }
 
@@ -565,6 +653,8 @@ fn map_meta(r: &rusqlite::Row<'_>) -> rusqlite::Result<IssueMeta> {
         labels: parse_labels(r.get(6)?),
         comments_count: r.get(7)?,
         updated_at: r.get(8)?,
+        author: r.get::<_, Option<String>>(10)?.unwrap_or_default(),
+        created_at: r.get::<_, Option<String>>(11)?.unwrap_or_default(),
         comments: None,
     })
 }
@@ -615,3 +705,150 @@ CREATE TABLE IF NOT EXISTS query_log(
   id INTEGER PRIMARY KEY, ts TEXT DEFAULT (datetime('now')),
   tool TEXT, query TEXT, filters TEXT, results TEXT, follow_up TEXT);
 "#;
+
+/// LIKE 通配符转义(配 `ESCAPE '\'`):`\` `%` `_` 前加反斜杠,
+/// 防 labels/filter 值含 SQL LIKE 特殊字符造成误匹配。
+pub(crate) fn escape_like(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if c == '\\' || c == '%' || c == '_' {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmp_store(tag: &str) -> IssueStore {
+        let dir = std::env::temp_dir().join(format!("gh-rag-store-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        IssueStore::create_fixture(&dir.join("t.sqlite")).unwrap()
+    }
+
+    fn log_at(s: &IssueStore, tool: &str, query: &str, ts_expr: &str, follow_up: Option<&str>) {
+        s.db.execute(
+            "INSERT INTO query_log(ts, tool, query, follow_up) \
+                 VALUES (datetime('now', ?1), ?2, ?3, ?4)",
+            rusqlite::params![ts_expr, tool, query, follow_up],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn escape_like_quotes_wildcards() {
+        assert_eq!(escape_like("c++100%"), "c++100\\%");
+        assert_eq!(escape_like("a_b\\c"), "a\\_b\\\\c");
+        assert_eq!(escape_like("普通"), "普通");
+    }
+
+    #[test]
+    fn candidates_label_filter_escapes_wildcards() {
+        let s = tmp_store("labesc");
+        // 两条:label "100%bug" 与 "bug"(后者本不该被 %label% 命中……验证转义后互不串)
+        for (id, labels) in [(1, r#"["100%bug"]"#), (2, r#"["axb"]"#), (3, r#"["a_b"]"#)] {
+            s.db.execute(
+                "INSERT INTO issues(id, repo, number, labels) VALUES (?1,'t/r',?1,?2)",
+                rusqlite::params![id, labels],
+            )
+            .unwrap();
+            s.db.execute(
+                "INSERT INTO issues_vec(issue_id, embedding) VALUES (?1, x'00000000')",
+                [id],
+            )
+            .unwrap();
+        }
+        // 精确查 "a_b":不该命中 "axb"(旧实现 _ 作通配符会误命中)
+        let hit = s
+            .candidates(None, None, Some(&["a_b".to_string()]))
+            .unwrap();
+        assert_eq!(hit.len(), 1, "a_b 不得匹配 axb");
+        assert_eq!(hit[0].0, 3);
+        // 精确查 "100%bug":% 作通配符时仍能命中,但须只此一条
+        let hit = s
+            .candidates(None, None, Some(&["100%bug".to_string()]))
+            .unwrap();
+        assert_eq!(hit.len(), 1);
+        assert_eq!(hit[0].0, 1);
+        // 不存在的 label 不命中任何行
+        assert!(s
+            .candidates(None, None, Some(&["100xbug".to_string()]))
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn log_query_persists_filters_json() {
+        let s = tmp_store("logf");
+        s.log_query(
+            "search_issues",
+            "q",
+            Some(serde_json::json!({"state": "open"})),
+            &[("t/r".into(), 1)],
+        )
+        .unwrap();
+        let (f, r): (Option<String>, String) =
+            s.db.query_row("SELECT filters, results FROM query_log", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(f.as_deref(), Some(r#"{"state":"open"}"#));
+        assert_eq!(r, r#"["t/r#1"]"#);
+    }
+
+    #[test]
+    fn mark_follow_up_targets_issue_not_latest_search() {
+        let s = tmp_store("mfu");
+        // 两次检索:第一次结果含 t/r#7,第二次不含
+        s.log_query(
+            "search_issues",
+            "old query",
+            None,
+            &[("t/r".into(), 7), ("t/r".into(), 8)],
+        )
+        .unwrap();
+        s.log_query("search_issues", "new query", None, &[("t/x".into(), 9)])
+            .unwrap();
+        assert!(s.mark_follow_up("t/r", 7).unwrap(), "命中旧检索行");
+        let (qid, fu): (i64, Option<String>) =
+            s.db.query_row(
+                "SELECT id, follow_up FROM query_log WHERE follow_up IS NOT NULL",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(qid, 1, "标记落在结果含目标的检索行,而非最近一条");
+        assert_eq!(fu.as_deref(), Some("t/r#7"));
+        // 目标不在任何结果里 → 不动任何行
+        assert!(!s.mark_follow_up("t/none", 1).unwrap());
+    }
+
+    #[test]
+    fn query_report_counts_window_and_dedup() {
+        let s = tmp_store("report");
+        // 窗口内(相对 now,离 1 天边界留余量):5 次查询,3 个去重,2 次同 query,1 次 follow_up
+        log_at(&s, "search_issues", "a", "-2 day", None);
+        log_at(&s, "search_issues", "a", "-3 day", None);
+        log_at(&s, "search_issues", "b", "-4 day", Some("t/r#3"));
+        log_at(&s, "get_issue_context", "-", "-5 day", None);
+        // 窗口外:不得计入
+        log_at(&s, "search_issues", "old", "-40 day", None);
+
+        let r = s.query_report(7).unwrap();
+        assert_eq!(r.total, 4);
+        assert_eq!(r.unique, 3);
+        assert!((r.follow_up_rate - 0.25).abs() < 1e-9);
+        assert_eq!(r.top_queries[0], ("a".into(), 2));
+        assert_eq!(r.by_tool.len(), 2);
+        assert_eq!(r.by_tool[0], ("search_issues".into(), 3));
+        // 空窗口:全零,除零安全
+        let r0 = s.query_report(1).unwrap();
+        assert_eq!(r0.total, 0);
+        assert_eq!(r0.follow_up_rate, 0.0);
+        assert!(r0.top_queries.is_empty());
+    }
+}

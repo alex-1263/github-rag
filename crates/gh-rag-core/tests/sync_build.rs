@@ -94,6 +94,8 @@ fn meta(n: i64, title: &str, updated: &str) -> IssueMeta {
         labels: vec!["bug".into()],
         comments_count: 0,
         comments: None,
+        author: "alice".into(),
+        created_at: updated.into(),
         updated_at: updated.into(),
     }
 }

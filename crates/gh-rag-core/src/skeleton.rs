@@ -151,12 +151,43 @@ pub fn import_skeleton(
     copy_whitelisted(&src, &dst.db)
 }
 
+/// 代理环境变量解析(纯函数,便于单测):HTTPS_PROXY 优先,其次 ALL_PROXY;
+/// 空串视为未设置。返回值可直接喂 `ureq::Proxy::try_from`。
+pub fn proxy_url_from_env(https_proxy: Option<&str>, all_proxy: Option<&str>) -> Option<String> {
+    [https_proxy, all_proxy]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|s| !s.is_empty())
+        .map(String::from)
+}
+
+fn proxied_agent() -> ureq::Agent {
+    let proxy = proxy_url_from_env(
+        std::env::var("HTTPS_PROXY").ok().as_deref(),
+        std::env::var("ALL_PROXY").ok().as_deref(),
+    )
+    .and_then(|u| match ureq::Proxy::new(&u) {
+        Ok(p) => Some(p),
+        Err(e) => {
+            eprintln!("[gh-rag] 代理配置无效({u}: {e}),忽略代理直连");
+            None
+        }
+    });
+    match proxy {
+        Some(p) => ureq::AgentBuilder::new().proxy(p).build(),
+        None => ureq::AgentBuilder::new().build(),
+    }
+}
+
 /// 下载骨架(URL → 本地文件);http(s) 才走网络,返回落盘路径。
+/// 代理:HTTPS_PROXY / ALL_PROXY 存在时经代理请求(企业网络/镜像场景)。
 pub fn download_to(url: &str, dest: &std::path::Path) -> Result<std::path::PathBuf> {
     if !url.starts_with("http://") && !url.starts_with("https://") {
         return Ok(url.into()); // 本地路径直接用
     }
-    let resp = ureq::get(url)
+    let resp = proxied_agent()
+        .get(url)
         .call()
         .map_err(|e| Error::Io(std::io::Error::other(format!("download {url}: {e}"))))?;
     use std::io::Read;
@@ -189,6 +220,27 @@ mod tests {
     use super::*;
     use crate::embedder::EmbeddingFingerprint;
 
+    #[test]
+    fn proxy_env_resolution_prefers_https_proxy() {
+        assert_eq!(
+            proxy_url_from_env(Some("http://p1:8080"), Some("http://p2:1080")),
+            Some("http://p1:8080".into()),
+            "HTTPS_PROXY 优先"
+        );
+        assert_eq!(
+            proxy_url_from_env(None, Some("http://p2:1080")),
+            Some("http://p2:1080".into()),
+            "无 HTTPS_PROXY 回落 ALL_PROXY"
+        );
+        assert_eq!(proxy_url_from_env(None, None), None);
+        assert_eq!(
+            proxy_url_from_env(Some("  "), Some("http://p2:1080")),
+            Some("http://p2:1080".into()),
+            "空串视为未设置"
+        );
+        assert_eq!(proxy_url_from_env(Some("  "), Some(" ")), None);
+    }
+
     const FP: &str = "test-model|api|len=512";
 
     fn seeded_store(tag: &str) -> (std::path::PathBuf, IssueStore) {
@@ -213,6 +265,8 @@ mod tests {
                 author: "t8y2".into(),
                 body: "评论全文内容".into(),
             }]),
+            author: "alice".into(),
+            created_at: "2026-08-30T00:00:00Z".into(),
             updated_at: "2026-09-01T00:00:00Z".into(),
         };
         store

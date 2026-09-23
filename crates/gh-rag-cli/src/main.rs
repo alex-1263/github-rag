@@ -22,6 +22,12 @@ enum Cmd {
     },
     /// 索引状态:各仓库条数与游标
     Status,
+    /// 质量报表:近 N 天 query_log 统计(总量/去重/top10/follow_up 率/工具分布)
+    Report {
+        /// 统计窗口天数
+        #[arg(long, default_value_t = 30)]
+        days: u32,
+    },
     /// 环境自检:打印嵌入配置解析结果并实测一次嵌入
     Doctor,
     /// 导出骨架库(向量+元数据,无全文;分发形态)
@@ -47,6 +53,7 @@ fn main() -> anyhow::Result<()> {
         Cmd::Export { skeleton, output } => export(skeleton, output),
         Cmd::Fetch { from } => fetch(from),
         Cmd::Status => status(),
+        Cmd::Report { days } => report(days),
         Cmd::Sync { repo, all } => sync(repo, all),
     }
 }
@@ -55,6 +62,26 @@ fn status() -> anyhow::Result<()> {
     let store = gh_rag_core::store::IssueStore::new(&default_index_path()?)?;
     for (repo, count, last) in store.repo_stats().map_err(|e| anyhow::anyhow!("{e}"))? {
         println!("{repo:40} {count:>6} 条   上次同步 {last}");
+    }
+    Ok(())
+}
+
+fn report(days: u32) -> anyhow::Result<()> {
+    let store = gh_rag_core::store::IssueStore::new(&default_index_path()?)?;
+    let r = store
+        .query_report(days)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    println!("query_log 报表(近 {} 天)", r.days);
+    println!("  查询总数:{}", r.total);
+    println!("  去重查询:{}", r.unique);
+    println!("  follow_up 率:{:.1}%", r.follow_up_rate * 100.0);
+    println!("  top 高频查询:");
+    for (q, n) in &r.top_queries {
+        println!("    {n:>4} × {q}");
+    }
+    println!("  按工具分布:");
+    for (tool, n) in &r.by_tool {
+        println!("    {n:>4} × {tool}");
     }
     Ok(())
 }
