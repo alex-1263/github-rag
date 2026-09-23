@@ -129,7 +129,7 @@ impl ServerHandler for GhRag {
                     json!(hits
                         .iter()
                         .map(|h| json!({
-                            "repo": h.repo, "number": h.number, "title": h.title,
+                            "repo": h.repo, "number": h.number, "kind": h.kind, "title": h.title,
                             "state": h.state, "snippet": h.snippet,
                             "score": h.score, "source": h.source,
                         }))

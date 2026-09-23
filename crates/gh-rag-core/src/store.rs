@@ -17,6 +17,8 @@ pub struct IssueMeta {
     pub id: i64,
     pub repo: String,
     pub number: i64,
+    /// issue | pr(同一文档流,检索默认全收,返回体带 kind 供 agent 区分)
+    pub kind: String,
     pub title: String,
     pub body: String,
     pub state: String,
@@ -44,8 +46,12 @@ impl IssueStore {
         }
         let db = Connection::open(db_path)?;
         db.pragma_update(None, "journal_mode", "WAL")?;
-        // 幂等迁移:CREATE IF NOT EXISTS 补新表(如 issue_comments)
+        // 幂等迁移:CREATE IF NOT EXISTS 补新表;ALTER 补新列(kind)
         db.execute_batch(SCHEMA)?;
+        let _ = db.execute(
+            "ALTER TABLE issues ADD COLUMN kind TEXT NOT NULL DEFAULT 'issue'",
+            [],
+        );
         Ok(Self { db })
     }
 
@@ -158,7 +164,7 @@ impl IssueStore {
         }
         let ph = (0..ids.len()).map(|_| "?").collect::<Vec<_>>().join(",");
         let sql = format!(
-            "SELECT id, repo, number, title, body, state, labels, comments_count, updated_at \
+            "SELECT id, repo, number, title, body, state, labels, comments_count, updated_at, kind \
              FROM issues WHERE id IN ({ph})"
         );
         let mut stmt = self.db.prepare(&sql)?;
@@ -169,6 +175,9 @@ impl IssueStore {
                     id: r.get(0)?,
                     repo: r.get(1)?,
                     number: r.get(2)?,
+                    kind: r
+                        .get::<_, Option<String>>(9)?
+                        .unwrap_or_else(|| "issue".into()),
                     title: r.get(3)?,
                     body: r.get(4)?,
                     state: r.get(5)?,
@@ -199,7 +208,7 @@ impl IssueStore {
 
     pub fn get_issue(&self, repo: &str, number: i64) -> Result<Option<IssueMeta>> {
         let mut stmt = self.db.prepare(
-            "SELECT id, repo, number, title, body, state, labels, comments_count, updated_at \
+            "SELECT id, repo, number, title, body, state, labels, comments_count, updated_at, kind \
              FROM issues WHERE repo = ? AND number = ?",
         )?;
         let mut rows = stmt.query_map([repo, &number.to_string()], map_meta)?;
@@ -308,10 +317,10 @@ impl IssueStore {
             let mut sel =
                 tx.prepare("SELECT id,title,body FROM issues WHERE repo=?1 AND number=?2")?;
             let mut ins = tx.prepare(
-                "INSERT INTO issues(id,repo,number,title,body,state,labels,comments_count,updated_at,embedded_hash)
-                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
+                "INSERT INTO issues(id,repo,kind,number,title,body,state,labels,comments_count,updated_at,embedded_hash)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
                  ON CONFLICT(repo,number) DO UPDATE SET
-                   title=excluded.title, body=excluded.body, state=excluded.state,
+                   kind=excluded.kind, title=excluded.title, body=excluded.body, state=excluded.state,
                    labels=excluded.labels, comments_count=excluded.comments_count,
                    updated_at=excluded.updated_at, embedded_hash=excluded.embedded_hash")?;
             let mut fts_ins =
@@ -340,6 +349,7 @@ impl IssueStore {
                 ins.execute(rusqlite::params![
                     if row_id == 0 { None } else { Some(row_id) },
                     it.meta.repo,
+                    it.meta.kind,
                     it.meta.number,
                     it.meta.title,
                     it.meta.body,
@@ -467,6 +477,9 @@ fn map_meta(r: &rusqlite::Row<'_>) -> rusqlite::Result<IssueMeta> {
         id: r.get(0)?,
         repo: r.get(1)?,
         number: r.get(2)?,
+        kind: r
+            .get::<_, Option<String>>(9)?
+            .unwrap_or_else(|| "issue".into()),
         title: r.get(3)?,
         body: r.get(4)?,
         state: r.get(5)?,
@@ -493,6 +506,7 @@ fn space_of(fp: &str) -> (String, String) {
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS issues(
   id INTEGER PRIMARY KEY, repo TEXT NOT NULL, number INTEGER NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'issue',
   title TEXT, body TEXT, state TEXT, labels TEXT,
   author TEXT, comments_count INTEGER DEFAULT 0,
   created_at TEXT, updated_at TEXT, embedded_hash TEXT,

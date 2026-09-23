@@ -71,11 +71,16 @@ pub fn parse_page(repo: &str, body: &str) -> Result<Vec<IssueMeta>> {
         .map_err(|e| Error::Io(std::io::Error::other(format!("github json: {e}"))))?;
     Ok(raw
         .into_iter()
-        .filter(|i| i.pull_request.is_none())
         .map(|i| IssueMeta {
             id: i.id,
             repo: repo.to_string(),
             number: i.number,
+            kind: if i.pull_request.is_some() {
+                "pr"
+            } else {
+                "issue"
+            }
+            .to_string(),
             title: i.title.unwrap_or_default(),
             body: i.body.unwrap_or_default(),
             state: i.state,
@@ -251,10 +256,12 @@ mod tests {
     #[test]
     fn parse_page_filters_pr_and_maps_fields() {
         let v = parse_page("a/b", PAGE).unwrap();
-        assert_eq!(v.len(), 1, "PR 应被过滤");
+        assert_eq!(v.len(), 2, "PR 保留入库(kind 区分)");
         assert_eq!(v[0].number, 7);
+        assert_eq!(v[0].kind, "issue");
         assert_eq!(v[0].comments_count, 1);
         assert_eq!(v[0].comments, None, "评论由 sync 层从仓库级端点聚合");
+        assert_eq!(v[1].kind, "pr", "PR 标记");
         assert_eq!(v[0].labels, vec!["bug"]);
     }
     #[test]

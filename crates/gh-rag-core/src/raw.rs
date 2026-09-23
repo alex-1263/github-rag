@@ -16,6 +16,7 @@ use std::path::PathBuf;
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
 pub struct RawIssue {
     pub number: i64,
+    pub kind: String,
     pub title: String,
     pub body: String,
     pub state: String,
@@ -51,14 +52,22 @@ impl RawStore {
     }
 
     fn issues_path(&self) -> PathBuf {
-        self.dir.join("issues.jsonl")
+        self.dir.join("issues.jsonl.gz")
     }
     fn comments_path(&self) -> PathBuf {
-        self.dir.join("comments.jsonl")
+        self.dir.join("comments.jsonl.gz")
     }
 
-    fn read_lines(path: &PathBuf) -> Vec<String> {
-        std::fs::read_to_string(path)
+    /// 读行:优先 .gz;兼容旧裸 .jsonl(首次访问自动迁移为 .gz)。
+    fn read_lines(path: &std::path::Path) -> Vec<String> {
+        let plain = path.with_extension(""); // *.jsonl.gz → *.jsonl
+        if !path.exists() && plain.exists() {
+            if let Ok(text) = std::fs::read_to_string(&plain) {
+                let _ = write_gzip(path, &text);
+                let _ = std::fs::remove_file(&plain);
+            }
+        }
+        read_gzip(path)
             .map(|s| {
                 s.lines()
                     .filter(|l| !l.trim().is_empty())
@@ -101,11 +110,9 @@ impl RawStore {
             })
             .collect();
         sorted.sort_by_key(|(n, _)| *n);
-        let mut f = std::fs::File::create(self.issues_path())
+        let text: String = sorted.into_iter().map(|(_, l)| format!("{l}\n")).collect();
+        write_gzip(&self.issues_path(), &text)
             .map_err(|e| Error::Io(std::io::Error::other(format!("raw write: {e}"))))?;
-        for (_, l) in sorted {
-            writeln!(f, "{l}").ok();
-        }
 
         // comments
         let mut seen: std::collections::HashSet<i64> = std::collections::HashSet::new();
@@ -126,11 +133,9 @@ impl RawStore {
                 .map(|c| (c.issue_number, c.id))
                 .unwrap_or((0, 0))
         });
-        let mut f = std::fs::File::create(self.comments_path())
+        let text: String = existing.into_iter().map(|l| format!("{l}\n")).collect();
+        write_gzip(&self.comments_path(), &text)
             .map_err(|e| Error::Io(std::io::Error::other(format!("raw write: {e}"))))?;
-        for l in existing {
-            writeln!(f, "{l}").ok();
-        }
         Ok(())
     }
 
@@ -157,6 +162,7 @@ impl RawStore {
                 id: i.number, // raw 层以 number 为键;issues.id 自增与 GitHub 无关
                 repo: repo.to_string(),
                 number: i.number,
+                kind: i.kind,
                 title: i.title,
                 body: i.body,
                 state: i.state,
@@ -167,6 +173,27 @@ impl RawStore {
             })
             .collect())
     }
+}
+
+/// gzip 全量写(JSONL 冷数据,压缩存储是默认)。
+fn write_gzip(path: &std::path::Path, text: &str) -> std::io::Result<()> {
+    use flate2::write::GzEncoder;
+    use flate2::Compression;
+    let f = std::fs::File::create(path)?;
+    let mut enc = GzEncoder::new(f, Compression::default());
+    enc.write_all(text.as_bytes())?;
+    enc.finish()?;
+    Ok(())
+}
+
+fn read_gzip(path: &std::path::Path) -> std::io::Result<String> {
+    use flate2::read::GzDecoder;
+    use std::io::Read;
+    let f = std::fs::File::open(path)?;
+    let mut dec = GzDecoder::new(f);
+    let mut out = String::new();
+    dec.read_to_string(&mut out)?;
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -182,6 +209,7 @@ mod tests {
     fn issue(n: i64, updated: &str, title: &str) -> RawIssue {
         RawIssue {
             number: n,
+            kind: "issue".into(),
             title: title.into(),
             body: format!("body {n}"),
             state: "open".into(),

@@ -8,6 +8,8 @@ use crate::Result;
 pub struct SearchHit {
     pub repo: String,
     pub number: i64,
+    /// issue | pr
+    pub kind: String,
     pub title: String,
     pub state: String,
     pub snippet: String,
@@ -115,6 +117,7 @@ pub fn hybrid_search(
         hits.push(SearchHit {
             repo: m.repo.clone(),
             number: m.number,
+            kind: m.kind.clone(),
             title: m.title.clone(),
             state: m.state.clone(),
             snippet: snippet(&m.body, params.snippet_chars),

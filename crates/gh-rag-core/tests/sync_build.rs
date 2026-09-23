@@ -87,6 +87,7 @@ fn meta(n: i64, title: &str, updated: &str) -> IssueMeta {
         id: n,
         repo: "t/a".into(),
         number: n,
+        kind: "issue".into(),
         title: title.into(),
         body: format!("body of {n}"),
         state: "open".into(),

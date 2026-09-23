@@ -30,9 +30,69 @@ pub trait Embedder {
     fn fingerprint(&self) -> EmbeddingFingerprint;
 }
 
-/// 评论聚合版嵌入文本:标题加权 + 正文截断 + 评论区(独立配额,时间序)。
-/// 总量按模型窗口预算(qwen3.7 128K / bge-m3 8K,均远大于此处上限)。
-/// bot 过滤由调用方(sync)负责,本函数保持纯。
+/// 嵌入文本中的图片降噪:`![alt](url)` → `[图片]`,裸图片 URL → `[图片]`。
+/// URL 哈希字符对嵌入模型是纯噪声;原文保留在库/MCP 返回,仅嵌入侧剥离。
+pub fn strip_image_links(body: &str) -> String {
+    let chars: Vec<char> = body.chars().collect();
+    let mut out = String::with_capacity(body.len());
+    let mut i = 0usize;
+    while i < chars.len() {
+        // markdown 图片 ![...](...)
+        if chars[i] == '!' && i + 1 < chars.len() && chars[i + 1] == '[' {
+            if let Some(end) = md_image_end(&chars, i) {
+                out.push_str("[图片]");
+                i = end + 1;
+                continue;
+            }
+        }
+        // 裸图片 URL(http 开头且行内出现图片扩展名)
+        if chars[i..].starts_with(&['h', 't', 't', 'p']) {
+            let mut j = i;
+            while j < chars.len() && !matches!(chars[j], ' ' | '\n' | '\r' | ')' | '"' | '\t') {
+                j += 1;
+            }
+            let url: String = chars[i..j].iter().collect();
+            let lower = url.to_lowercase();
+            if [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"]
+                .iter()
+                .any(|ext| lower.contains(ext))
+            {
+                out.push_str("[图片]");
+                i = j;
+                continue;
+            }
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
+}
+
+fn md_image_end(chars: &[char], start: usize) -> Option<usize> {
+    let mut j = start + 2;
+    while j < chars.len() && chars[j] != ']' {
+        if chars[j] == '\n' {
+            return None;
+        }
+        j += 1;
+    }
+    if j + 1 >= chars.len() || chars[j + 1] != '(' {
+        return None;
+    }
+    let mut k = j + 2;
+    while k < chars.len() && chars[k] != ')' {
+        if chars[k] == '\n' {
+            return None;
+        }
+        k += 1;
+    }
+    if k >= chars.len() {
+        None
+    } else {
+        Some(k)
+    }
+}
+
 pub fn build_text_with_comments(
     title: &str,
     body: &str,
@@ -43,7 +103,8 @@ pub fn build_text_with_comments(
     per_comment_max: usize,
 ) -> String {
     let mut text = build_text(title, "", title_repeats, 0); // 标题段(自带换行)
-    text.push_str(&body.chars().take(body_max_chars).collect::<String>());
+    let clean_body = strip_image_links(body);
+    text.push_str(&clean_body.chars().take(body_max_chars).collect::<String>());
     if comments.is_empty() {
         return text;
     }
@@ -103,6 +164,16 @@ mod tests {
             500,
         );
         assert!(t.chars().count() < 200, "配额 100 应截断超长评论");
+    }
+
+    #[test]
+    fn image_urls_are_stripped_from_embed_text() {
+        let body = "报错截图:\n![image](https://dl.dbxio.com/abc123.png)\n还有裸链 https://a.com/x.JPG 结束";
+        let t = build_text_with_comments("t", body, &[], 1, 500, 100, 100);
+        assert!(!t.contains("dl.dbxio.com"), "markdown 图片 URL 应剥离");
+        assert!(!t.contains("a.com/x.JPG"), "裸图片 URL 应剥离");
+        assert!(t.matches("[图片]").count() >= 1);
+        assert!(t.contains("报错截图"));
     }
 
     #[test]

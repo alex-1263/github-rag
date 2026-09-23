@@ -77,6 +77,7 @@ pub fn text_hash(m: &IssueMeta, p: &SyncParams) -> String {
 fn to_raw(m: &IssueMeta) -> RawIssue {
     RawIssue {
         number: m.number,
+        kind: m.kind.clone(),
         title: m.title.clone(),
         body: m.body.clone(),
         state: m.state.clone(),

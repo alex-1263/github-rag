@@ -12,6 +12,7 @@ serde_json.workspace = true
 toml = "0.8"
 rusqlite.workspace = true
 sha1 = "0.10"
+flate2 = "1"
 
 [features]
 default = []
