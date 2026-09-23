@@ -113,6 +113,30 @@ pub fn repos() -> Result<Option<Vec<String>>> {
     Ok(t.repos.filter(|v| !v.is_empty()))
 }
 
+/// 检索参数 [retrieval](vec_top/fts_top/rrf_k/top_k/snippet_chars;缺省与 SearchParams::default 一致)。
+pub fn search_params() -> Result<crate::retrieve::SearchParams> {
+    #[derive(Default, serde::Deserialize)]
+    struct R {
+        vec_top: Option<usize>,
+        fts_top: Option<usize>,
+        rrf_k: Option<usize>,
+        snippet_chars: Option<usize>,
+    }
+    let r: R = std::fs::read_to_string(gh_rag_home().join("config.toml"))
+        .ok()
+        .and_then(|raw| toml::from_str::<toml::Value>(&raw).ok())
+        .and_then(|v| v.get("retrieval").cloned())
+        .and_then(|s| s.try_into().ok())
+        .unwrap_or_default();
+    let d = crate::retrieve::SearchParams::default();
+    Ok(crate::retrieve::SearchParams {
+        vec_top: r.vec_top.unwrap_or(d.vec_top),
+        fts_top: r.fts_top.unwrap_or(d.fts_top),
+        rrf_k: r.rrf_k.unwrap_or(d.rrf_k),
+        snippet_chars: r.snippet_chars.unwrap_or(d.snippet_chars),
+    })
+}
+
 /// 文本组装参数 [retrieval] title_repeats / body_max_chars(与检索一致,建库必须同参)。
 pub fn text_params() -> Result<(usize, usize)> {
     #[derive(Default, serde::Deserialize)]
