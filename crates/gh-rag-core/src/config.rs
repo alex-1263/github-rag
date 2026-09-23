@@ -21,6 +21,11 @@ pub const PRESETS: &[(&str, &str, &str)] = &[
         "https://api.siliconflow.cn/v1",
         "BAAI/bge-m3",
     ),
+    (
+        "aliyun",
+        "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "qwen3.7-text-embedding-flash",
+    ),
     ("ollama", "http://127.0.0.1:11434/v1", "bge-m3"),
     (
         "openai",
