@@ -157,6 +157,7 @@ impl IssueStore {
         phrase: &str,
         repos: Option<&[String]>,
         state: Option<&str>,
+        labels: Option<&[String]>,
         limit: usize,
     ) -> Result<Vec<(i64, f32)>> {
         // CJK 双字组预处理(与索引侧同一变换),再按空白拆 token 逐个引号包裹
@@ -188,6 +189,13 @@ impl IssueStore {
             if state != "all" {
                 sql.push_str(" AND i.state = ?");
                 args.push(Box::new(state.to_string()));
+            }
+        }
+        if let Some(labels) = labels {
+            for lab in labels {
+                // 与 candidates 同一过滤面:labels 过滤两腿必须对齐
+                sql.push_str(" AND i.labels LIKE ? ESCAPE '\\'");
+                args.push(Box::new(format!("%\"{}\"%", escape_like(lab))));
             }
         }
         sql.push_str(" ORDER BY 2 LIMIT ?");
@@ -223,12 +231,12 @@ impl IssueStore {
                     kind: r
                         .get::<_, Option<String>>(9)?
                         .unwrap_or_else(|| "issue".into()),
-                    title: r.get(3)?,
-                    body: r.get(4)?,
-                    state: r.get(5)?,
+                    title: r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                    body: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                    state: r.get::<_, Option<String>>(5)?.unwrap_or_default(),
                     labels: parse_labels(r.get(6)?),
                     comments_count: r.get(7)?,
-                    updated_at: r.get(8)?,
+                    updated_at: r.get::<_, Option<String>>(8)?.unwrap_or_default(),
                     author: r.get(10)?,
                     created_at: r.get(11)?,
                 })
@@ -347,7 +355,7 @@ impl IssueStore {
             }
             Some(cur) => cur,
         };
-        if space_of(&cur) != space_of(&fp.0) {
+        if fingerprint_space(&cur) != fingerprint_space(&fp.0) {
             return Err(Error::FingerprintMismatch {
                 db: cur,
                 current: fp.0.clone(),
@@ -568,7 +576,7 @@ impl IssueStore {
             "UPDATE query_log SET follow_up = ?2 WHERE id = \
              (SELECT id FROM query_log WHERE tool = 'search_issues' AND results LIKE ?1 \
               ORDER BY id DESC LIMIT 1)",
-            rusqlite::params![format!("%{target}%"), target],
+            rusqlite::params![format!("%\"{target}\"%"), target],
         )?;
         Ok(n > 0)
     }
@@ -647,12 +655,12 @@ fn map_meta(r: &rusqlite::Row<'_>) -> rusqlite::Result<IssueMeta> {
         kind: r
             .get::<_, Option<String>>(9)?
             .unwrap_or_else(|| "issue".into()),
-        title: r.get(3)?,
-        body: r.get(4)?,
-        state: r.get(5)?,
+        title: r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+        body: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
+        state: r.get::<_, Option<String>>(5)?.unwrap_or_default(),
         labels: parse_labels(r.get(6)?),
         comments_count: r.get(7)?,
-        updated_at: r.get(8)?,
+        updated_at: r.get::<_, Option<String>>(8)?.unwrap_or_default(),
         author: r.get::<_, Option<String>>(10)?.unwrap_or_default(),
         created_at: r.get::<_, Option<String>>(11)?.unwrap_or_default(),
         comments: None,
@@ -665,8 +673,9 @@ fn parse_labels(raw: Option<String>) -> Vec<String> {
 }
 
 /// 指纹的"向量空间"部分:`{model}|{impl}|len={n}|…` → (model, len)。
-/// impl 段不参与拦截判定(黄金对齐守护同模型实现的互换性)。
-fn space_of(fp: &str) -> (String, String) {
+/// 公开给 bin 层(mcp 启动时做读路径指纹防线),impl 段不参与拦截判定
+/// (黄金对齐守护同模型实现的互换性)。
+pub fn fingerprint_space(fp: &str) -> (String, String) {
     let model = fp.split('|').next().unwrap_or("").to_string();
     (model, seg_of(fp, "len="))
 }
@@ -834,13 +843,13 @@ mod tests {
         s.log_query("search_issues", "q", None, &[("cat/r".into(), 9)])
             .unwrap();
         assert!(
-            !s.mark_follow_up("at", 9).unwrap(),
+            !s.mark_follow_up("at/r", 9).unwrap(),
             "at/r#9 不得误标 cat/r#9"
         );
         // 精确目标仍能命中
         s.log_query("search_issues", "q2", None, &[("at/r".into(), 9)])
             .unwrap();
-        assert!(s.mark_follow_up("at", 9).unwrap());
+        assert!(s.mark_follow_up("at/r", 9).unwrap(), "精确目标应命中");
     }
 
     #[test]

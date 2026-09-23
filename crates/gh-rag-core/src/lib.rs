@@ -29,6 +29,9 @@ pub enum Error {
     #[error("embedding fingerprint mismatch: db has {db}, current {current} — rebuild required")]
     FingerprintMismatch { db: String, current: String },
 
+    #[error("向量维度不匹配:索引 {got} 维,查询 {expected} 维 — 嵌入模型/维度已变更,请重建索引")]
+    DimensionMismatch { expected: usize, got: usize },
+
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
 }

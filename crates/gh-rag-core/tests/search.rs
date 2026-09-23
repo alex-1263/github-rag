@@ -379,12 +379,12 @@ fn fts_cjk_migration_rebuilds_legacy_index() {
         Some("1"),
         "迁移必须写 fts_cjk 标记"
     );
-    let hits = store.fts_search("乱码", None, None, 10).unwrap();
+    let hits = store.fts_search("乱码", None, None, None, 10).unwrap();
     assert_eq!(hits.len(), 1, "迁移后中文子串必须可查");
 
     // 幂等:再次打开不重建(重建也无害,这里验证标记短路)
     let again = IssueStore::new(&path).unwrap();
-    let hits = again.fts_search("乱码", None, None, 10).unwrap();
+    let hits = again.fts_search("乱码", None, None, None, 10).unwrap();
     assert_eq!(hits.len(), 1, "重复打开不得破坏索引");
 }
 

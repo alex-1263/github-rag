@@ -1,8 +1,6 @@
 //! 混合检索:向量召回 ∥ FTS5 召回 → RRF 融合。
 
-use crate::embedder::Embedder;
-use crate::store::IssueStore;
-use crate::Result;
+use crate::{embedder::Embedder, store::IssueStore, Error, Result};
 
 #[derive(Debug, Clone)]
 pub struct SearchHit {
@@ -52,8 +50,23 @@ pub fn rrf_fuse(vec_rank: &[(i64, usize)], fts_rank: &[(i64, usize)], k: usize) 
         *scores.entry(*id).or_insert(0.0) += 1.0 / (k + rank) as f32;
     }
     let mut out: Vec<(i64, f32)> = scores.into_iter().collect();
-    out.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    out.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.0.cmp(&b.0))
+    });
     out
+}
+
+/// 点积(两侧均须同维;长度不等 = 索引与查询向量空间不一致 → Err,不静默截断)。
+fn dot(a: &[f32], b: &[f32]) -> Result<f32> {
+    if a.len() != b.len() {
+        return Err(Error::DimensionMismatch {
+            expected: a.len(),
+            got: b.len(),
+        });
+    }
+    Ok(a.iter().zip(b.iter()).map(|(x, y)| x * y).sum())
 }
 
 pub fn hybrid_search(
@@ -66,13 +79,6 @@ pub fn hybrid_search(
 ) -> Result<Vec<SearchHit>> {
     let q = embedder.embed_query(query)?;
     let hits = hybrid_search_with_query(store, &q, query, filter, top_k, params)?;
-    let log_entries: Vec<(String, i64)> = hits.iter().map(|h| (h.repo.clone(), h.number)).collect();
-    let _ = store.log_query(
-        "search_issues",
-        query,
-        Some(filters_json(filter)),
-        &log_entries,
-    );
     Ok(hits)
 }
 
@@ -112,10 +118,10 @@ pub fn hybrid_search_with_query(
             .iter()
             .map(|(id, blob)| {
                 let v = bytes_to_f32(blob);
-                let dot = v.iter().zip(q.iter()).map(|(a, b)| a * b).sum::<f32>();
-                (*id, dot)
+                let s = dot(q, &v)?;
+                Ok((*id, s))
             })
-            .collect();
+            .collect::<Result<Vec<_>>>()?;
         sims.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         vec_rank = sims
             .iter()
@@ -126,7 +132,7 @@ pub fn hybrid_search_with_query(
     }
 
     // ② BM25 召回
-    let fts_rows = store.fts_search(query, repos, state, params.fts_top)?;
+    let fts_rows = store.fts_search(query, repos, state, labels, params.fts_top)?;
     let fts_rank: Vec<(i64, usize)> = fts_rows
         .iter()
         .enumerate()
@@ -162,6 +168,15 @@ pub fn hybrid_search_with_query(
         });
     }
 
+    // 查询日志:落在此处(MCP 走 with_query 路径),飞轮不漏记;失败不阻断检索
+    let log_entries: Vec<(String, i64)> = hits.iter().map(|h| (h.repo.clone(), h.number)).collect();
+    let _ = store.log_query(
+        "search_issues",
+        query,
+        Some(filters_json(filter)),
+        &log_entries,
+    );
+
     Ok(hits)
 }
 /// (issue_id, repo, number, title, score)
@@ -190,9 +205,12 @@ pub fn find_related(
                 return None;
             }
             let v = bytes_to_f32(b);
-            Some((*id, v.iter().zip(q.iter()).map(|(a, c)| a * c).sum::<f32>()))
+            match dot(&q, &v) {
+                Ok(s) => Some(Ok((*id, s))),
+                Err(e) => Some(Err(e)),
+            }
         })
-        .collect();
+        .collect::<Result<Vec<_>>>()?;
     sims.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     let top: Vec<i64> = sims.iter().take(top_k).map(|(id, _)| *id).collect();
     let metas = store.meta(&top)?;
