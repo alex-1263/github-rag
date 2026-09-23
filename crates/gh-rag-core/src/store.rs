@@ -828,6 +828,32 @@ mod tests {
     }
 
     #[test]
+    fn mark_follow_up_does_not_match_repo_prefix() {
+        let s = tmp_store("mfu2");
+        // 结果里只有 cat/r#9:目标 at/r#9 不得被 LIKE 子串误标
+        s.log_query("search_issues", "q", None, &[("cat/r".into(), 9)])
+            .unwrap();
+        assert!(
+            !s.mark_follow_up("at", 9).unwrap(),
+            "at/r#9 不得误标 cat/r#9"
+        );
+        // 精确目标仍能命中
+        s.log_query("search_issues", "q2", None, &[("at/r".into(), 9)])
+            .unwrap();
+        assert!(s.mark_follow_up("at", 9).unwrap());
+    }
+
+    #[test]
+    fn get_issue_tolerates_null_title_body() {
+        let s = tmp_store("nullmeta");
+        s.db.execute("INSERT INTO issues(repo, number) VALUES ('t/r', 1)", [])
+            .unwrap();
+        let m = s.get_issue("t/r", 1).unwrap().expect("行应存在");
+        assert_eq!(m.title, "");
+        assert_eq!(m.body, "");
+    }
+
+    #[test]
     fn query_report_counts_window_and_dedup() {
         let s = tmp_store("report");
         // 窗口内(相对 now,离 1 天边界留余量):5 次查询,3 个去重,2 次同 query,1 次 follow_up

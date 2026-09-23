@@ -234,4 +234,58 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert!((out[0].1 - 1.0 / 61.0).abs() < 1e-6);
     }
+
+    #[test]
+    fn rrf_fuse_ties_break_by_id_ascending() {
+        // 5 与 9 各只中一路同排名 → 分数相同;次键 id 升序保证确定性
+        let out = rrf_fuse(&[(9_i64, 1_usize)], &[(5_i64, 1_usize)], 60);
+        assert_eq!(out.len(), 2);
+        assert!((out[0].1 - out[1].1).abs() < 1e-9, "分数应相同");
+        assert_eq!(out[0].0, 5, "平分时 id 小者在前");
+        assert_eq!(out[1].0, 9);
+    }
+
+    #[test]
+    fn dot_dimension_mismatch_is_error() {
+        assert!(dot(&[1.0, 2.0], &[1.0, 2.0, 3.0]).is_err());
+        assert!((dot(&[1.0, 2.0], &[3.0, 4.0]).unwrap() - 11.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn hybrid_search_with_query_dimension_mismatch_is_error() {
+        let dir = std::env::temp_dir().join(format!("gh-rag-dim-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = IssueStore::create_fixture(&dir.join("t.sqlite")).unwrap();
+        store
+            .db
+            .execute(
+                "INSERT INTO issues(id, repo, number, title, body, state) \
+                 VALUES (1,'t/r',1,'x','x','open')",
+                [],
+            )
+            .unwrap();
+        // 索引向量 4 维,查询向量 8 维:必须 Err,不得静默 zip 截断
+        store
+            .db
+            .execute(
+                "INSERT INTO issues_vec(issue_id, embedding) VALUES (1, x'000000000000803f')",
+                [],
+            )
+            .unwrap();
+        let q = vec![0.5f32; 8];
+        let err = hybrid_search_with_query(
+            &store,
+            &q,
+            "x",
+            &SearchFilter::default(),
+            5,
+            &SearchParams::default(),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, crate::Error::DimensionMismatch { .. }),
+            "实际:{err}"
+        );
+    }
 }

@@ -90,12 +90,7 @@ fn sync(repo: Option<String>, all: bool) -> anyhow::Result<()> {
     use gh_rag_core::github::HttpGithubApi;
     use gh_rag_core::sync::sync_repo;
 
-    let repos: Vec<String> = match repo {
-        Some(r) if !all => vec![r],
-        _ => gh_rag_core::config::repos()?.ok_or_else(|| {
-            anyhow::anyhow!("config.toml 未配置 repos;或显式 `gh-rag sync owner/name`")
-        })?,
-    };
+    let repos = sync_repos(repo, all)?;
 
     let github = HttpGithubApi::from_env_config()?;
     let store = open_or_create_index()?;
@@ -204,5 +199,35 @@ fn open_or_create_index() -> anyhow::Result<gh_rag_core::store::IssueStore> {
             std::fs::create_dir_all(dir)?;
         }
         gh_rag_core::store::IssueStore::create_fixture(&p).map_err(|e| anyhow::anyhow!("{e}"))
+    }
+}
+
+/// sync 的仓库清单解析(独立函数便于单测):
+/// repo 与 --all 同给 = 参数冲突,显式报错(不再静默吞掉位置参数)。
+fn sync_repos(repo: Option<String>, all: bool) -> anyhow::Result<Vec<String>> {
+    if all && repo.is_some() {
+        anyhow::bail!("`gh-rag sync <repo>` 与 --all 互斥,只能给其一");
+    }
+    match repo {
+        Some(r) => Ok(vec![r]),
+        None => gh_rag_core::config::repos()?.ok_or_else(|| {
+            anyhow::anyhow!("config.toml 未配置 repos;或显式 `gh-rag sync owner/name`")
+        }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sync_repos;
+
+    #[test]
+    fn repo_and_all_conflict_is_error() {
+        let err = sync_repos(Some("o/r".into()), true).unwrap_err();
+        assert!(err.to_string().contains("互斥"), "实际:{err}");
+    }
+
+    #[test]
+    fn explicit_repo_without_all() {
+        assert_eq!(sync_repos(Some("o/r".into()), false).unwrap(), vec!["o/r"]);
     }
 }

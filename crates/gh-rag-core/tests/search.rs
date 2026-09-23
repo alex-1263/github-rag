@@ -387,3 +387,79 @@ fn fts_cjk_migration_rebuilds_legacy_index() {
     let hits = again.fts_search("乱码", None, None, 10).unwrap();
     assert_eq!(hits.len(), 1, "重复打开不得破坏索引");
 }
+
+// fix:hybrid_search_with_query(MCP 路径)也必须落 query_log,否则飞轮失效
+#[test]
+fn with_query_path_logs_query() {
+    use gh_rag_core::retrieve::hybrid_search_with_query;
+    let store = setup(&fixtures());
+    let q = BagEmbedder.embed_query("login redirect").unwrap();
+    hybrid_search_with_query(
+        &store,
+        &q,
+        "login redirect",
+        &SearchFilter::default(),
+        5,
+        &SearchParams::default(),
+    )
+    .unwrap();
+    let n: i64 = store
+        .db
+        .query_row(
+            "SELECT COUNT(*) FROM query_log WHERE tool='search_issues' AND query='login redirect'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(n, 1, "with_query 检索路径必须落 query_log");
+}
+
+// fix:labels 过滤对向量腿与 FTS 腿同时生效
+#[test]
+fn labels_filter_applies_to_both_legs() {
+    use gh_rag_core::retrieve::hybrid_search_with_query;
+    let store = setup(&[
+        FixtureIssue {
+            repo: "t/r",
+            number: 1,
+            title: "crash on save",
+            body: "saving a file crashes the app",
+            state: "open",
+            labels: &["bug"],
+        },
+        FixtureIssue {
+            repo: "t/r",
+            number: 2,
+            title: "crash on save",
+            body: "saving a file crashes the app",
+            state: "open",
+            labels: &["feature"],
+        },
+    ]);
+    let filter = SearchFilter {
+        labels: Some(vec!["bug".into()]),
+        ..Default::default()
+    };
+    let q = BagEmbedder.embed_query("crash save").unwrap();
+    // 向量腿
+    let hits = hybrid_search_with_query(
+        &store,
+        &q,
+        "crash save",
+        &filter,
+        10,
+        &SearchParams::default(),
+    )
+    .unwrap();
+    assert!(!hits.is_empty(), "过滤后向量腿应有命中");
+    assert!(
+        hits.iter().all(|h| h.number == 1),
+        "向量腿:无 bug 标签的条目不得出现,得到 {:?}",
+        hits.iter().map(|h| h.number).collect::<Vec<_>>()
+    );
+    // FTS 腿(仅 FTS 命中的路径:同名标题,FTS 均可命中)
+    let fts_rows = store
+        .fts_search("crash save", None, None, Some(&["bug".to_string()]), 10)
+        .unwrap();
+    assert_eq!(fts_rows.len(), 1, "FTS 腿:labels 过滤后只应剩 bug 条目");
+}
