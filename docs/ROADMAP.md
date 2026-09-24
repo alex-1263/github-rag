@@ -8,11 +8,11 @@
 
 | 维度 | 状态 |
 |---|---|
-| 代码 | main = v0.2.0;dev = Tier 1 已并(74dac25,P0+三 worktree);~110 测试,CI 三门禁绿,分支保护(禁 force push/删除) |
+| 代码 | main = dev = **v0.3.0**(b8f22b0);~110 测试,CI 三门禁绿,分支保护(禁 force push/删除) |
 | 功能 | 混合检索(CJK bigram)/ relations 关联图 / 评论全链路 / eval(LLM 裁判)/ report / 骨架分发(fetch/export)/ **check_duplicate 查重(第五 MCP 工具)** / list_repos 标签侧面 / CLI search |
 | 数据 | 双仓 44,885 文档(t8y2/dbx 9,945 + langchain 34,940)+ 60k 评论 + 3,289 关联 |
 | 质量 | eval 基线:nDCG@5=0.949 / MRR=1.000 / 垃圾率 0%(15 题,锚定集待建) |
-| 分发 | Release v0.2.0 三平台;gh-rag-indexes 周更(data-年-周,保留 4 期,已切 v0.2.0) |
+| 分发 | Release **v0.3.0** 三平台(Latest,双二进制+sha256);gh-rag-indexes 周更已切 v0.3.0(data-年-周,保留 4 期);生产 exe 已部署 v0.3.0 |
 | 验收计时 | kill criteria 裁决日 **2026-10-23**(对外可发现起 30 天);≥2 仓库已满足 |
 
 ## Tier 1 —— ✅ 已完成(2026-09-24,P0 + 三 worktree 并行,全部合并入 dev)
