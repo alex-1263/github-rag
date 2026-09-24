@@ -102,7 +102,7 @@ cargo fmt --all && cargo clippy --all-targets -- -D warnings
 cargo test --workspace        # ~100 tests, zero network
 ```
 
-Design: [DESIGN.md](DESIGN.md) (Chinese). Discipline: [AGENTS.md](AGENTS.md). Contributing: [CONTRIBUTING.md](CONTRIBUTING.md).
+Discipline & frozen contracts: [AGENTS.md](AGENTS.md). Contributing: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 

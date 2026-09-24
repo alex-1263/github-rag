@@ -102,7 +102,7 @@ cargo fmt --all && cargo clippy --all-targets -- -D warnings
 cargo test --workspace        # ~100 测试,零网络
 ```
 
-设计见 [DESIGN.md](DESIGN.md),纪律见 [AGENTS.md](AGENTS.md),贡献请读 [CONTRIBUTING.md](CONTRIBUTING.md)。
+开发纪律与冻结契约见 [AGENTS.md](AGENTS.md),贡献请读 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ## 许可
 

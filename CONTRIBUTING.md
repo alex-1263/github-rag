@@ -1,4 +1,6 @@
-# 贡献指南
+# 贡献指南 | Contributing
+
+**[中文](CONTRIBUTING.md) | [English](CONTRIBUTING.en.md)**
 
 感谢对 gh-rag 的关注!本项目处于验证期,功能面刻意克制——**新增功能请先开 issue 讨论**再动手。
 
