@@ -35,7 +35,7 @@ GH_RAG_API_KEY=xxx cargo test -p gh-rag-core --features golden -- --nocapture
 ## 硬约束(违反 = 改动无效,详见 AGENTS.md)
 
 - **黄金对齐阈值(0.999)永远不许放宽**:它守的是向量空间一致性,失败时检索质量会无声劣化
-- **MCP 工具签名冻结**:改动须先改 DESIGN.md §3.8 契约再改代码
+- **MCP 工具签名冻结**:改动须先改 AGENTS.md 冻结契约节再改代码
 - **依赖方向单向**:cli/mcp → core;core 不依赖任何 bin
 - **数据分层**:GitHub API → raw 原始层 → 索引;索引重建只许从 raw 走
 - **禁止** `index.sqlite` 写入任何虚拟表(vec0 等语言私有格式)——跨语言兼容是设计决定
