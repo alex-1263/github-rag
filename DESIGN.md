@@ -116,8 +116,8 @@ CREATE TABLE query_log (id, ts, tool, query, filters, results, follow_up);
 
 **质量系统**:
 1. ✅ 点击日志(query_log + follow_up 定向标记 + report 报表)
-2. ⏳ 评测集(duplicate 对 + RAGAS)——**未建**,验收前落地
-3. ⏳ 回归门禁(评测集就位后接 CI)
+2. ✅ 评测(`gh-rag eval`:真实查询 × LLM 裁判,BeIR 四指标;基线 nDCG@5=0.949/MRR=1.000/垃圾率 0%——rerank 不触发)
+3. ⏳ 锚定集校准(10 条人工金标待复核)与评测集扩充
 
 **性能红线**:单实例 ≤10 万条(6.6k 条实测库内检索 ~30ms);超限先降维(512 实测重叠 87%),再考虑 ANN。
 
@@ -185,7 +185,7 @@ gh-rag fetch --from <url|path> # 骨架装载(指纹校验+安全导入)
 |---|---|
 | Phase 0-1.5(Python 验证 + MVP + 验收基建) | ✅ 完成(2026-09,Python 已退役) |
 | M1 serve 对齐 / M2 建库 | ✅ 完成 |
-| M2.5 relations(fixes/closes 图) | ⏳ 下一个 |
+| ~~M2.5 relations~~ | ✅ 完成(3,289 条关联入库,MCP 分类透出) |
 | M3 发布工程 | ✅ 部分(v0.1.0 多平台 Release + gh-rag-indexes 数据分发已运营;GoReleaser 不再需要) |
 | Phase 2b(webhook 实时/rerank 启用) | 视验收数据 |
 | Phase 3(B 启动) | 视外部验证 |
