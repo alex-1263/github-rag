@@ -258,11 +258,28 @@ impl ServerHandler for GhRag {
                 })
             }
             "list_repos" => {
-                with_store(&store, |s| s.repo_stats().map_err(|e| e.to_string())).map(|stats| {
+                with_store(&store, |s| {
+                    let stats = s.repo_stats().map_err(|e| e.to_string())?;
+                    let facets = s.label_facets().map_err(|e| e.to_string())?;
+                    Ok((stats, facets))
+                })
+                .map(|(stats, facets)| {
+                    // facets 已按 repo、count 降序,按 repo 归组即得各仓标签列表
+                    let mut labels_by_repo: std::collections::HashMap<
+                        &str,
+                        Vec<serde_json::Value>,
+                    > = std::collections::HashMap::new();
+                    for (r, label, count) in &facets {
+                        labels_by_repo
+                            .entry(r)
+                            .or_default()
+                            .push(json!({ "name": label, "count": count }));
+                    }
                     json!(stats
                         .iter()
                         .map(|(r, n, last)| json!({
                             "repo": r, "issues": n, "last_sync": last,
+                            "labels": labels_by_repo.get(r.as_str()).cloned().unwrap_or_default(),
                         }))
                         .collect::<Vec<_>>())
                 })
