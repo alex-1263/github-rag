@@ -45,6 +45,23 @@ enum Cmd {
         #[arg(long)]
         from: String,
     },
+    /// 语义检索已索引的 issues/PRs(参数与 MCP search_issues 同形)
+    Search {
+        /// 自然语言查询
+        query: String,
+        /// 限定仓库(owner/name),可多次
+        #[arg(long)]
+        repos: Vec<String>,
+        /// 过滤状态:open | closed | all
+        #[arg(long)]
+        state: Option<String>,
+        /// 过滤标签,可多次
+        #[arg(long)]
+        labels: Vec<String>,
+        /// 返回条数
+        #[arg(long, default_value_t = 5)]
+        top_k: usize,
+    },
     /// LLM 裁判检索评测:近 N 天真实查询 → top-k 逐条打分 → BeIR 指标报表
     Eval {
         /// 统计窗口天数(缺省读 [eval].days,再缺省 7)
@@ -64,8 +81,142 @@ fn main() -> anyhow::Result<()> {
         Cmd::Status => status(),
         Cmd::Report { days } => report(days),
         Cmd::Sync { repo, all } => sync(repo, all),
+        Cmd::Search {
+            query,
+            repos,
+            state,
+            labels,
+            top_k,
+        } => search(&query, repos, state, labels, top_k),
         Cmd::Eval { days, anchors } => eval(days, anchors.as_deref()),
     }
+}
+
+/// CLI 检索:与 MCP search_issues 同一路径(嵌入先行不持锁 → hybrid_search_with_query),
+/// query_log 记 tool=`cli-search`(不污染 eval 题库)。
+fn search(
+    query: &str,
+    repos: Vec<String>,
+    state: Option<String>,
+    labels: Vec<String>,
+    top_k: usize,
+) -> anyhow::Result<()> {
+    use gh_rag_core::api_embedder::ApiEmbedder;
+    use gh_rag_core::embedder::Embedder as _;
+    use gh_rag_core::retrieve::{hybrid_search_with_query, SearchFilter};
+
+    let store = gh_rag_core::store::IssueStore::new(&default_index_path()?)?;
+    let embedder = ApiEmbedder::from_env().map_err(|e| {
+        anyhow::anyhow!("嵌入配置不可用:{e}(运行 `gh-rag doctor` 自检;检索语义腿需要 api key)")
+    })?;
+    // 嵌入先行(网络调用不持库锁),进库后做召回——与 MCP 侧一致
+    let q = embedder.embed_query(query).map_err(|e| {
+        anyhow::anyhow!("嵌入请求失败:{e}(检查网络与嵌入端点,可运行 `gh-rag doctor` 实测)")
+    })?;
+    let filter = SearchFilter {
+        repos: (!repos.is_empty()).then_some(repos),
+        state,
+        labels: (!labels.is_empty()).then_some(labels),
+    };
+    let hits = hybrid_search_with_query(
+        &store,
+        &q,
+        query,
+        &filter,
+        top_k,
+        &gh_rag_core::config::search_params().unwrap_or_default(),
+        "cli-search",
+    )
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
+    println!("{}", format_hits(&hits));
+    Ok(())
+}
+
+/// 人读表格:number/kind/repo/title/score/source,列宽自适应对齐(零依赖手写)。
+fn format_hits(hits: &[gh_rag_core::retrieve::SearchHit]) -> String {
+    use std::fmt::Write as _;
+    if hits.is_empty() {
+        return "(无命中)".into();
+    }
+    // 字符宽按 char 数近似(CJK 等宽 2 列);标题统一 1:1 截断防破表
+    fn width(s: &str) -> usize {
+        s.chars().map(|c| if c.is_ascii() { 1 } else { 2 }).sum()
+    }
+    fn pad(s: &str, w: usize) -> String {
+        let mut out = s.to_string();
+        for _ in width(s)..w {
+            out.push(' ');
+        }
+        out
+    }
+    fn fit(s: &str, w: usize) -> String {
+        let mut out = String::new();
+        let mut used = 0;
+        for c in s.chars() {
+            let cw = if c.is_ascii() { 1 } else { 2 };
+            if used + cw > w.saturating_sub(1) {
+                out.push('…');
+                break;
+            }
+            out.push(c);
+            used += cw;
+        }
+        pad(&out, w)
+    }
+
+    let nums: Vec<String> = hits.iter().map(|h| h.number.to_string()).collect();
+    let w = (
+        nums.iter().map(|s| s.len()).max().unwrap_or(6).max(6),
+        hits.iter()
+            .map(|h| width(&h.kind))
+            .max()
+            .unwrap_or(4)
+            .max(4),
+        hits.iter()
+            .map(|h| width(&h.repo))
+            .max()
+            .unwrap_or(3)
+            .max(3),
+        hits.iter()
+            .map(|h| width(&h.title))
+            .max()
+            .unwrap_or(5)
+            .clamp(5, 60),
+        hits.iter()
+            .map(|h| format!("{:.4}", h.score).len())
+            .max()
+            .unwrap_or(5)
+            .max(5),
+        hits.iter()
+            .map(|h| h.source.len())
+            .max()
+            .unwrap_or(6)
+            .max(6),
+    );
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "{} {} {} {} {} {}",
+        pad("number", w.0),
+        pad("kind", w.1),
+        pad("repo", w.2),
+        pad("title", w.3),
+        pad("score", w.4),
+        pad("source", w.5)
+    );
+    for (h, n) in hits.iter().zip(&nums) {
+        let _ = writeln!(
+            out,
+            "{} {} {} {} {:.4} {}",
+            pad(n, w.0),
+            pad(&h.kind, w.1),
+            pad(&h.repo, w.2),
+            fit(&h.title, w.3),
+            h.score,
+            pad(h.source, w.5)
+        );
+    }
+    out
 }
 
 fn eval(days: Option<u32>, anchors_path: Option<&str>) -> anyhow::Result<()> {
@@ -352,7 +503,69 @@ fn sync_repos(repo: Option<String>, all: bool) -> anyhow::Result<Vec<String>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_anchors, sync_repos, today_iso};
+    use super::{format_hits, parse_anchors, sync_repos, today_iso};
+    use gh_rag_core::retrieve::SearchHit;
+
+    #[test]
+    fn hits_table_columns_and_alignment() {
+        let hits = vec![
+            SearchHit {
+                repo: "t/r".into(),
+                number: 12,
+                kind: "issue".into(),
+                title: "连接池泄漏".into(),
+                state: "open".into(),
+                snippet: String::new(),
+                score: 0.9137,
+                source: "vec+fts",
+            },
+            SearchHit {
+                repo: "long/repo".into(),
+                number: 3,
+                kind: "pr".into(),
+                title: "fix leak".into(),
+                state: "closed".into(),
+                snippet: String::new(),
+                score: 0.5,
+                source: "fts",
+            },
+        ];
+        let out = format_hits(&hits);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 3, "表头+两行:\n{out}");
+        // 列对齐 = 各行第 5 列(score)起点一致;标题含空格也按宽计算,不破位
+        let dw = |s: &str| {
+            s.chars()
+                .map(|c| if c.is_ascii() { 1 } else { 2 })
+                .sum::<usize>()
+        };
+        for l in &lines {
+            assert_eq!(
+                dw(l),
+                dw(lines[0]),
+                "显示宽一致:表头[{}]行[{}]",
+                lines[0],
+                l
+            );
+            let toks: Vec<&str> = l.split_whitespace().collect();
+            let (score, source) = (toks[toks.len() - 2], toks[toks.len() - 1]);
+            assert!(
+                l.starts_with("number") || score.chars().all(|c| c.is_ascii_digit() || c == '.'),
+                "score 列:{l}"
+            );
+            assert!(
+                source == "source" || ["vec", "fts", "vec+fts"].contains(&source),
+                "source 列:{l}"
+            );
+        }
+        assert!(lines[1].contains("0.9137") && lines[1].contains("vec+fts"));
+        assert!(lines[2].contains("long/repo") && lines[2].contains("pr"));
+    }
+
+    #[test]
+    fn hits_table_empty_query_prints_placeholder() {
+        assert_eq!(format_hits(&[]), "(无命中)");
+    }
 
     #[test]
     fn repo_and_all_conflict_is_error() {

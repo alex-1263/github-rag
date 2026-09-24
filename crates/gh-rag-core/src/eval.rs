@@ -340,6 +340,7 @@ pub fn run_eval(
             &SearchFilter::default(),
             params.top_k,
             &SearchParams::default(),
+            "search_issues",
         )?;
         let mut hit_evals = Vec::with_capacity(hits.len());
         for h in &hits {

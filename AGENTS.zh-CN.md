@@ -38,6 +38,8 @@ get_issue_context(repo, number)
   → {issue 正文, labels, comments, related, relations:{fixes, closes, fixed_by, refs}}
 find_related(repo, number, top_k=10) → [{repo, number, title, score}]
 list_repos() → [{repo, issues, last_sync}]
+check_duplicate(title, body, repos?, top_k=5)
+  → [{repo, number, kind, title, state, score, title_sim, source}]
 ```
 
 返回体允许增量扩展(kind/comments/relations 先例);参数形状不许动。

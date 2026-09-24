@@ -296,6 +296,19 @@ impl IssueStore {
         Ok(rows)
     }
 
+    /// 标签侧面表:(repo, label, count),标签为 JSON 数组列,用 json_each 展开;
+    /// 按仓库分组、仓内 count 降序。
+    pub fn label_facets(&self) -> Result<Vec<(String, String, i64)>> {
+        let mut stmt = self.db.prepare(
+            "SELECT i.repo, je.value, COUNT(*) FROM issues i, json_each(i.labels) je \
+             GROUP BY i.repo, je.value ORDER BY i.repo, COUNT(*) DESC",
+        )?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     /// 全量替换 (repo, number) 的正向关系(同事务 DELETE+INSERT,空切片 = 清空)。
     pub fn relations_replace(
         &self,
@@ -781,6 +794,37 @@ mod tests {
             rusqlite::params![ts_expr, tool, query, follow_up],
         )
         .unwrap();
+    }
+
+    #[test]
+    fn label_facets_groups_and_orders_by_count() {
+        let s = tmp_store("labfacets");
+        // 两个仓:各多条标签、多计数
+        let rows = [
+            ("a/r", 1, r#"["bug","rust"]"#),
+            ("a/r", 2, r#"["bug"]"#),
+            ("a/r", 3, r#"["bug","help wanted","rust"]"#),
+            ("b/r", 10, r#"["docs"]"#),
+            ("b/r", 11, r#"["docs","ci"]"#),
+        ];
+        for (repo, id, labels) in rows {
+            s.db.execute(
+                "INSERT INTO issues(id, repo, number, labels) VALUES (?1,?2,?3,?4)",
+                rusqlite::params![id, repo, id, labels],
+            )
+            .unwrap();
+        }
+        let got = s.label_facets().unwrap();
+        assert_eq!(
+            got,
+            vec![
+                ("a/r".into(), "bug".into(), 3),
+                ("a/r".into(), "rust".into(), 2),
+                ("a/r".into(), "help wanted".into(), 1),
+                ("b/r".into(), "docs".into(), 2),
+                ("b/r".into(), "ci".into(), 1),
+            ]
+        );
     }
 
     #[test]
