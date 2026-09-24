@@ -38,6 +38,8 @@ get_issue_context(repo, number)
   → {issue body, labels, comments, related, relations:{fixes, closes, fixed_by, refs}}
 find_related(repo, number, top_k=10) → [{repo, number, title, score}]
 list_repos() → [{repo, issues, last_sync}]
+check_duplicate(title, body, repos?, top_k=5)
+  → [{repo, number, kind, title, state, score, title_sim, source}]
 ```
 
 Return-body additive extensions (kind/comments/relations) are allowed; parameter shapes are not.

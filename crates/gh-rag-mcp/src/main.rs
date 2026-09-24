@@ -139,6 +139,19 @@ impl ServerHandler for GhRag {
                     "List indexed repositories with issue counts and last-sync time.",
                     json!({"type":"object","properties":{}}),
                 ),
+                tool_def(
+                    "check_duplicate",
+                    "Before filing a new issue, check whether it already exists. \
+                     Pass the draft title and body; returns the most similar indexed issues \
+                     with a title-similarity score, so you can comment on the existing one \
+                     instead of filing a duplicate.",
+                    json!({"type":"object","required":["title","body"],"properties":{
+                        "title":{"type":"string"},
+                        "body":{"type":"string"},
+                        "repos":{"type":"array","items":{"type":"string"}},
+                        "top_k":{"type":"integer","default":5}
+                    }}),
+                ),
             ],
             next_cursor: None,
             ..Default::default()
@@ -280,6 +293,50 @@ impl ServerHandler for GhRag {
                         .map(|(r, n, last)| json!({
                             "repo": r, "issues": n, "last_sync": last,
                             "labels": labels_by_repo.get(r.as_str()).cloned().unwrap_or_default(),
+                        }))
+                        .collect::<Vec<_>>())
+                })
+            }
+            "check_duplicate" => {
+                let Some(title) = str_arg(&args, "title") else {
+                    return bad_request("title required");
+                };
+                let Some(body) = str_arg(&args, "body") else {
+                    return bad_request("body required");
+                };
+                let filter = SearchFilter {
+                    repos: opt_str_vec(&args, "repos"),
+                    ..Default::default()
+                };
+                let top_k = args.get("top_k").and_then(|v| v.as_i64()).unwrap_or(5) as usize;
+                // 指纹防线:同 search_issues(查重依赖向量空间一致)
+                if let Some(w) = &self.space_error {
+                    return tool_err(w);
+                }
+                // 草稿文本:索引侧同一组装(config [retrieval] 文本参数;指纹纪律含组装参数)
+                let (tr, body_max) = gh_rag_core::config::text_params().unwrap_or((2, 2000));
+                let text = gh_rag_core::duplicate::draft_text(&title, &body, tr, body_max);
+                // 嵌入先行(网络调用不持库锁,同 search_issues 臂),向量到手后取锁查重
+                let res = self.embed_query(&text).and_then(|q| {
+                    with_store(&store, |s| {
+                        gh_rag_core::duplicate::check_duplicate_with_query(
+                            s,
+                            &q,
+                            &title,
+                            &filter,
+                            top_k,
+                            &gh_rag_core::config::search_params().unwrap_or_default(),
+                        )
+                        .map_err(|e| e.to_string())
+                    })
+                });
+                res.map(|hits| {
+                    json!(hits
+                        .iter()
+                        .map(|h| json!({
+                            "repo": h.repo, "number": h.number, "kind": h.kind, "title": h.title,
+                            "state": h.state, "score": h.score, "title_sim": h.title_sim,
+                            "source": h.source,
                         }))
                         .collect::<Vec<_>>())
                 })

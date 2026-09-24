@@ -7,6 +7,7 @@
 pub mod api_embedder;
 pub mod cjk;
 pub mod config;
+pub mod duplicate;
 pub mod embedder;
 pub mod eval;
 pub mod github;
