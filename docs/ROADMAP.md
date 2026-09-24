@@ -36,6 +36,45 @@
 - 输出:人读表格(number/kind/repo/title/score/source)
 - 验收:同一查询 CLI 与 MCP 结果一致,query_log 两条记录
 
+## Tier 1 并行执行切分(worktree,2026-09-24 分析)
+
+结论:可并行,结构 = 1 个串行前置(P0)+ 3 个文件边界基本不交的任务 + 固定合并顺序 B → C → A。
+
+### P0 前置(先单独落 dev,再开 worktree)
+
+`hybrid_search_with_query` 把 query_log 工具名硬编码为 `search_issues`(retrieve.rs L173),
+而 eval 取题只认 `tool = 'search_issues'`(eval.rs L275)。A 需要记 `check_duplicate`、
+C 需要记 `cli-search`(否则 CLI 查询会污染 eval 题库)。改法:该函数加 `tool: &str` 参数,
+`hybrid_search` 包装与既有 MCP 调用点传 `search_issues`,行为零变化。
+这步不先定型,A/C 两个 agent 会各自发明互相冲突的改法。
+
+### 三任务(每 worktree 一 agent)
+
+| 任务 | 分支 | 文件边界 | 验收测试 |
+|---|---|---|---|
+| B. labels 侧面表 | feat/list-labels | core/store.rs(新增 `label_facets()`,GROUP BY 一条 SQL)+ mcp/main.rs list_repos 臂(L259-268) | 多仓多标签计数断言 |
+| C. cli search | feat/cli-search | cli/main.rs 独占(Search 子命令 + 人读表格;嵌入走 `ApiEmbedder::from_env`,复用 MCP 同款先嵌后检路径,tool 传 `cli-search`) | 同一查询 CLI 与 MCP 结果一致;query_log 出现 tool=cli-search 且 eval 题库不含它 |
+| A. check_duplicate | feat/check-duplicate | AGENTS.md + AGENTS.zh-CN.md 契约节(**先改**)、core/duplicate.rs(新模块,title_sim 可复用 cjk.rs bigram)、core/tests/check_duplicate.rs(新) | 重复标题命中 / 不相关不命中 / repos 过滤 |
+
+唯一共享文件 mcp/main.rs:A 与 B 触碰区域不邻接(B 改既有臂,A 在 tools vec 尾部追加 tool_def、
+在 `_ =>` 前追加新臂),git 可自动合并;保险措施 = 合并顺序 **B → C → A**,A 并入前先 rebase 最新 dev。
+
+### 开工与合并
+
+```bash
+git switch dev && git pull            # 前提:P0 已在 dev
+git worktree add -b feat/list-labels      ../gh-rag-b dev
+git worktree add -b feat/cli-search       ../gh-rag-c dev
+git worktree add -b feat/check-duplicate  ../gh-rag-a dev
+# 各 worktree 独立 target/(磁盘 ×3;Windows 并行构建勿共享 CARGO_TARGET_DIR,锁冲突)
+
+# 合并(在 dev 上按序):B → C → A(A 先 git rebase dev)
+cargo fmt --all && cargo clippy --all-targets -- -D warnings && cargo test --workspace
+# 二进制级全链回归 fetch→sync→MCP→report(单元绿灯在集成边界撒过两次谎,勿省)
+git worktree remove ../gh-rag-b && git branch -d feat/list-labels   # c/a 同理
+git push origin dev
+```
+
 ## Tier 2 —— 有信号再做
 
 | 项 | 触发条件 | 要点 |
