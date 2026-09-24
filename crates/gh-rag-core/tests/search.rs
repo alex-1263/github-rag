@@ -401,6 +401,7 @@ fn with_query_path_logs_query() {
         &SearchFilter::default(),
         5,
         &SearchParams::default(),
+        "search_issues",
     )
     .unwrap();
     let n: i64 = store
@@ -412,6 +413,33 @@ fn with_query_path_logs_query() {
         )
         .unwrap();
     assert_eq!(n, 1, "with_query 检索路径必须落 query_log");
+}
+
+// P0:query_log 工具名可传——cli-search/check_duplicate 各记各的,eval 题库(tool='search_issues')不被污染
+#[test]
+fn with_query_logs_custom_tool_label() {
+    use gh_rag_core::retrieve::hybrid_search_with_query;
+    let store = setup(&fixtures());
+    let q = BagEmbedder.embed_query("login redirect").unwrap();
+    hybrid_search_with_query(
+        &store,
+        &q,
+        "login redirect",
+        &SearchFilter::default(),
+        5,
+        &SearchParams::default(),
+        "cli-search",
+    )
+    .unwrap();
+    let n: i64 = store
+        .db
+        .query_row(
+            "SELECT COUNT(*) FROM query_log WHERE tool='cli-search' AND query='login redirect'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(n, 1, "自定义工具名必须原样落 query_log");
 }
 
 // fix:labels 过滤对向量腿与 FTS 腿同时生效
@@ -449,6 +477,7 @@ fn labels_filter_applies_to_both_legs() {
         &filter,
         10,
         &SearchParams::default(),
+        "search_issues",
     )
     .unwrap();
     assert!(!hits.is_empty(), "过滤后向量腿应有命中");

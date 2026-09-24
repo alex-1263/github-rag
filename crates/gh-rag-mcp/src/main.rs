@@ -179,6 +179,7 @@ impl ServerHandler for GhRag {
                             top_k,
                             // 检索参数从 config [retrieval] 读(AGENTS 纪律),解析失败回落默认
                             &gh_rag_core::config::search_params().unwrap_or_default(),
+                            "search_issues",
                         )
                         .map_err(|e| e.to_string())
                     })

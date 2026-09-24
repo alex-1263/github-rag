@@ -78,7 +78,7 @@ pub fn hybrid_search(
     params: &SearchParams,
 ) -> Result<Vec<SearchHit>> {
     let q = embedder.embed_query(query)?;
-    let hits = hybrid_search_with_query(store, &q, query, filter, top_k, params)?;
+    let hits = hybrid_search_with_query(store, &q, query, filter, top_k, params, "search_issues")?;
     Ok(hits)
 }
 
@@ -98,6 +98,8 @@ fn filters_json(f: &SearchFilter) -> serde_json::Value {
 }
 
 /// 已有查询向量(如 MCP 侧嵌入先行)的检索路径:不持库锁完成网络调用后再进库。
+/// `tool` 为 query_log 记录的工具名(既有检索传 `search_issues`,CLI 传 `cli-search`,
+/// 查重传 `check_duplicate`)——eval 取题只认 `search_issues`,别路查询勿混入)。
 pub fn hybrid_search_with_query(
     store: &IssueStore,
     q: &[f32],
@@ -105,6 +107,7 @@ pub fn hybrid_search_with_query(
     filter: &SearchFilter,
     top_k: usize,
     params: &SearchParams,
+    tool: &str,
 ) -> Result<Vec<SearchHit>> {
     let repos = filter.repos.as_deref();
     let state = filter.state.as_deref();
@@ -170,12 +173,7 @@ pub fn hybrid_search_with_query(
 
     // 查询日志:落在此处(MCP 走 with_query 路径),飞轮不漏记;失败不阻断检索
     let log_entries: Vec<(String, i64)> = hits.iter().map(|h| (h.repo.clone(), h.number)).collect();
-    let _ = store.log_query(
-        "search_issues",
-        query,
-        Some(filters_json(filter)),
-        &log_entries,
-    );
+    let _ = store.log_query(tool, query, Some(filters_json(filter)), &log_entries);
 
     Ok(hits)
 }
@@ -299,6 +297,7 @@ mod tests {
             &SearchFilter::default(),
             5,
             &SearchParams::default(),
+            "search_issues",
         )
         .unwrap_err();
         assert!(
