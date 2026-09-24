@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/gh-rag-core", "crates/gh-rag-cli", "crates/gh-rag-mcp"]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/alex-1263/github-rag"
