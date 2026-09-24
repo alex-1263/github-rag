@@ -2,20 +2,20 @@
 
 > 面向新开发会话的执行文档:当前状态 → 下一步(Tier 1 带规格)→ 积压与触发条件 → 运维要点。
 > 纪律基线见 [AGENTS.md](../AGENTS.md)(冻结契约/TDD/数据分层),本文档只管"做什么与顺序"。
-> 更新:2026-09-24(v0.2.0 后)
+> 更新:2026-09-24(Tier 1 并行落地后)
 
 ## 当前状态快照
 
 | 维度 | 状态 |
 |---|---|
-| 代码 | main = v0.2.0,~100 测试,CI 三门禁绿,分支保护(禁 force push/删除) |
-| 功能 | 混合检索(CJK bigram)/ relations 关联图 / 评论全链路 / eval(LLM 裁判)/ report / 骨架分发(fetch/export) |
+| 代码 | main = v0.2.0;dev = Tier 1 已并(74dac25,P0+三 worktree);~110 测试,CI 三门禁绿,分支保护(禁 force push/删除) |
+| 功能 | 混合检索(CJK bigram)/ relations 关联图 / 评论全链路 / eval(LLM 裁判)/ report / 骨架分发(fetch/export)/ **check_duplicate 查重(第五 MCP 工具)** / list_repos 标签侧面 / CLI search |
 | 数据 | 双仓 44,885 文档(t8y2/dbx 9,945 + langchain 34,940)+ 60k 评论 + 3,289 关联 |
 | 质量 | eval 基线:nDCG@5=0.949 / MRR=1.000 / 垃圾率 0%(15 题,锚定集待建) |
 | 分发 | Release v0.2.0 三平台;gh-rag-indexes 周更(data-年-周,保留 4 期,已切 v0.2.0) |
 | 验收计时 | kill criteria 裁决日 **2026-10-23**(对外可发现起 30 天);≥2 仓库已满足 |
 
-## Tier 1 —— 下一波(全部合规面内,合计约一天)
+## Tier 1 —— ✅ 已完成(2026-09-24,P0 + 三 worktree 并行,全部合并入 dev)
 
 ### A. 新 MCP 工具 `check_duplicate(title, body)` ⭐ 项目初心
 - **场景**:agent 帮用户起草 issue 时查重(PROPOSAL 第一痛点;dbx 维护者日常)
@@ -38,7 +38,10 @@
 
 ## Tier 1 并行执行切分(worktree,2026-09-24 分析)
 
-结论:可并行,结构 = 1 个串行前置(P0)+ 3 个文件边界基本不交的任务 + 固定合并顺序 B → C → A。
+> ✅ 已按此执行完毕:P0 → B → C → A 依序合并(dev 74dac25),合并后二进制级全链回归通过
+> (骨架往返含指纹拦截正反两例 / 增量 sync 125 条 / MCP stdio 五工具 / check_duplicate 真实命中
+> t8y2/dbx#3215 title_sim=0.909 / report 三工具分布 21·2·1)。生产 exe 已换新(旧版留档
+> gh-rag-mcp-old-v0.2.0.exe)。事故两起均为「编辑落主树」,已当场搬回/还原,未污染合并。
 
 ### P0 前置(先单独落 dev,再开 worktree)
 
