@@ -82,7 +82,7 @@ impl GhRag {
             .map_err(|_| "embedder lock poisoned".to_string())?;
         if slot.is_none() {
             *slot = Some(ApiEmbedder::from_env().map_err(|e| {
-                format!("嵌入端点不可用:{e}(search_issues/find_related 语义腿需要;list_repos/get_issue_context 不需要)")
+                format!("嵌入端点不可用:{e}(search_issues/find_related/check_duplicate 语义腿需要;list_repos/get_issue_context 不需要)")
             })?);
         }
         slot.as_ref()
